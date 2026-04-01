@@ -1,5 +1,4 @@
 import json
-import math
 import os
 import re
 from pathlib import Path
@@ -99,7 +98,6 @@ def format_money(value):
 
 def normalize_mobile_au(mobile):
     mobile = str(mobile).strip()
-
     allowed = []
     for ch in mobile:
         if ch.isdigit() or ch == "+":
@@ -542,12 +540,12 @@ def interpolate_color(c1, c2, t):
 
 
 def draw_soft_shadow(page, rect):
-    shadow_rect = fitz.Rect(rect.x0 + 1.5, rect.y0 + 1.5, rect.x1 + 1.5, rect.y1 + 1.5)
+    shadow_rect = fitz.Rect(rect.x0 + 1.2, rect.y0 + 1.2, rect.x1 + 1.2, rect.y1 + 1.2)
     page.draw_rect(
         shadow_rect,
         color=None,
         fill=(0.15, 0.22, 0.32),
-        fill_opacity=0.14,
+        fill_opacity=0.10,
         overlay=False,
     )
 
@@ -560,7 +558,7 @@ def draw_gradient_button(page, rect, text):
 
     draw_soft_shadow(page, rect)
 
-    steps = 28
+    steps = 24
     stripe_h = rect.height / steps
     for i in range(steps):
         y0 = rect.y0 + i * stripe_h
@@ -575,32 +573,87 @@ def draw_gradient_button(page, rect, text):
 
     page.draw_rect(rect, color=border_color, width=0.8, overlay=True)
 
-    highlight_rect = fitz.Rect(rect.x0 + 1.5, rect.y0 + 1.5, rect.x1 - 1.5, rect.y0 + 4.0)
+    highlight_rect = fitz.Rect(rect.x0 + 1.2, rect.y0 + 1.2, rect.x1 - 1.2, rect.y0 + 3.6)
     page.draw_rect(
         highlight_rect,
         color=None,
         fill=highlight_color,
-        fill_opacity=0.28,
+        fill_opacity=0.24,
         overlay=True,
     )
 
-    inner_border = fitz.Rect(rect.x0 + 1.2, rect.y0 + 1.2, rect.x1 - 1.2, rect.y1 - 1.2)
+    inner_border = fitz.Rect(rect.x0 + 1.0, rect.y0 + 1.0, rect.x1 - 1.0, rect.y1 - 1.0)
     page.draw_rect(
         inner_border,
         color=(0.72, 0.86, 1.0),
-        width=0.45,
+        width=0.40,
         overlay=True,
     )
 
     page.insert_textbox(
-        fitz.Rect(rect.x0, rect.y0 + 0.4, rect.x1, rect.y1),
+        fitz.Rect(rect.x0, rect.y0 + 0.25, rect.x1, rect.y1),
         text,
         fontname="helv",
-        fontsize=9.8,
+        fontsize=9.1,
         color=(1, 1, 1),
         align=1,
         overlay=True,
     )
+
+
+def find_total_band(page):
+    page_h = page.rect.height
+    candidates_total = []
+    candidates_gst = []
+
+    for label in ["Total", "total"]:
+        try:
+            for r in page.search_for(label):
+                if r.y0 > page_h * 0.35:
+                    candidates_total.append(r)
+        except Exception:
+            pass
+
+    for label in ["GST", "gst"]:
+        try:
+            for r in page.search_for(label):
+                if r.y0 > page_h * 0.35:
+                    candidates_gst.append(r)
+        except Exception:
+            pass
+
+    if not candidates_total:
+        return None, None
+
+    best_pair = None
+    best_score = None
+
+    for total_rect in candidates_total:
+        nearby_gst = None
+        nearby_dist = None
+        for gst_rect in candidates_gst:
+            dy = abs(gst_rect.y0 - total_rect.y0)
+            if dy <= 22:
+                dx = abs(gst_rect.x0 - total_rect.x0)
+                score = dy * 10 + dx
+                if nearby_dist is None or score < nearby_dist:
+                    nearby_dist = score
+                    nearby_gst = gst_rect
+
+        if nearby_gst is not None:
+            pair_score = total_rect.y0 * 1000 + nearby_dist
+            if best_score is None or pair_score > best_score:
+                best_score = pair_score
+                best_pair = (nearby_gst, total_rect)
+
+    if best_pair:
+        return best_pair
+
+    total_rect = sorted(candidates_total, key=lambda r: (r.y0, r.x0))[-1]
+    gst_rect = None
+    if candidates_gst:
+        gst_rect = min(candidates_gst, key=lambda r: abs(r.y0 - total_rect.y0) + abs(r.x0 - total_rect.x0))
+    return gst_rect, total_rect
 
 
 def add_payment_button_to_pdf(doc, payment_url):
@@ -611,39 +664,49 @@ def add_payment_button_to_pdf(doc, payment_url):
     if doc.page_count > 1:
         target_pages.insert(0, doc.page_count - 2)
 
-    placed = False
-
     for page_index in target_pages:
         page = doc[page_index]
-
-        try:
-            total_rects = page.search_for("Total")
-        except Exception:
-            total_rects = []
-
-        if not total_rects:
-            try:
-                total_rects = page.search_for("total")
-            except Exception:
-                total_rects = []
-
-        if not total_rects:
+        gst_rect, total_rect = find_total_band(page)
+        if total_rect is None:
             continue
 
-        total_rect = total_rects[-1]
+        right_limit = total_rect.x0 - 10
+        left_limit = 18
 
-        button_w = 128
-        button_h = 20
-        gap = 16
+        if gst_rect is not None:
+            left_limit = max(left_limit, gst_rect.x1 + 14)
 
-        x1 = max(total_rect.x0 - gap, 18 + button_w)
-        x0 = x1 - button_w
+        available_width = right_limit - left_limit
+        if available_width < 70:
+            continue
+
+        target_width = min(112, available_width)
+        target_width = max(86, target_width)
+
+        x0 = right_limit - target_width
+        x1 = right_limit
+
+        if gst_rect is not None and x0 < gst_rect.x1 + 14:
+            x0 = gst_rect.x1 + 14
+            x1 = x0 + target_width
+
+        if x1 > right_limit:
+            x1 = right_limit
+            x0 = x1 - target_width
+
+        if x0 < left_limit:
+            x0 = left_limit
+            x1 = right_limit
+
+        final_width = x1 - x0
+        if final_width < 70:
+            continue
+
         y0 = max(total_rect.y0 - 1.5, 18)
-        y1 = y0 + button_h
+        y1 = y0 + 20
 
         button_rect = fitz.Rect(x0, y0, x1, y1)
         draw_gradient_button(page, button_rect, "Click to Pay")
-
         page.insert_link(
             {
                 "kind": fitz.LINK_URI,
@@ -651,20 +714,18 @@ def add_payment_button_to_pdf(doc, payment_url):
                 "uri": payment_url,
             }
         )
-        placed = True
-        break
+        return
 
-    if not placed:
-        page = doc[doc.page_count - 1]
-        button_rect = fitz.Rect(page.rect.width - 158, page.rect.height - 42, page.rect.width - 30, page.rect.height - 22)
-        draw_gradient_button(page, button_rect, "Click to Pay")
-        page.insert_link(
-            {
-                "kind": fitz.LINK_URI,
-                "from": button_rect,
-                "uri": payment_url,
-            }
-        )
+    page = doc[doc.page_count - 1]
+    button_rect = fitz.Rect(page.rect.width - 136, page.rect.height - 42, page.rect.width - 30, page.rect.height - 22)
+    draw_gradient_button(page, button_rect, "Click to Pay")
+    page.insert_link(
+        {
+            "kind": fitz.LINK_URI,
+            "from": button_rect,
+            "uri": payment_url,
+        }
+    )
 
 
 def stamp_main_pdf_bytes(pdf_bytes, logo_path, doc_type, payment_url="", embed_payment_link=False):
