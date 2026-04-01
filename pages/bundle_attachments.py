@@ -205,6 +205,8 @@ def reset_session():
         "bundle_only_template_text",
         "bundle_only_new_template_name",
         "bundle_only_embed_link_in_pdf",
+        "bundle_only_attachment_notice",
+        "bundle_only_added_upload_keys",
     ]
     for key in keys:
         if key in st.session_state:
@@ -232,6 +234,7 @@ def init_state():
         "bundle_only_new_template_name": "",
         "bundle_only_embed_link_in_pdf": False,
         "bundle_only_attachment_notice": "",
+        "bundle_only_added_upload_keys": set(),
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -437,8 +440,14 @@ def add_extra_files_to_bundle(extra_files):
 
     added_count = 0
     for up in extra_files:
+        upload_id = getattr(up, "file_id", None) or f"{up.name}:{up.size}"
+        if upload_id in st.session_state["bundle_only_added_upload_keys"]:
+            continue
+
         up_bytes = up.getvalue()
         item_key = (up.name, len(up_bytes), "user")
+        st.session_state["bundle_only_added_upload_keys"].add(upload_id)
+
         if item_key in existing_keys:
             continue
 
@@ -492,7 +501,7 @@ def find_confirmation_span(page):
 def choose_pymupdf_font(font_name):
     name = (font_name or "").lower()
     if "bold" in name:
-        return "helvB"
+        return "helv"
     return "helv"
 
 
@@ -505,7 +514,6 @@ def overlay_tax_invoice_title(doc):
 
     if span:
         rect = span["rect"]
-        fontname = choose_pymupdf_font(span.get("font"))
         fontsize = max(10, min(float(span.get("size", 18)), 24))
 
         expanded_width = max(rect.width + 90, 155)
@@ -516,7 +524,7 @@ def overlay_tax_invoice_title(doc):
             fitz.Point(rect.x0, rect.y1 - 1),
             "Tax Invoice",
             fontsize=fontsize,
-            fontname=fontname,
+            fontname="helv",
             color=(0, 0, 0),
             overlay=True,
         )
@@ -528,7 +536,7 @@ def overlay_tax_invoice_title(doc):
         fitz.Point(fallback_rect.x0, fallback_rect.y1 - 1),
         "Tax Invoice",
         fontsize=18,
-        fontname="helvB",
+        fontname="helv",
         color=(0, 0, 0),
         overlay=True,
     )
@@ -577,7 +585,7 @@ def add_payment_button_to_pdf(doc, payment_url):
         page.insert_textbox(
             button_rect,
             "Pay Now",
-            fontname="helvB",
+            fontname="helv",
             fontsize=9,
             color=(1, 1, 1),
             align=1,
@@ -594,7 +602,7 @@ def add_payment_button_to_pdf(doc, payment_url):
         page.insert_textbox(
             button_rect,
             "Pay Now",
-            fontname="helvB",
+            fontname="helv",
             fontsize=9,
             color=(1, 1, 1),
             align=1,
@@ -883,11 +891,12 @@ if uploaded_pdf is not None:
         st.session_state["bundle_only_sms_status"] = ""
         st.session_state["bundle_only_embed_link_in_pdf"] = False
         st.session_state["bundle_only_attachment_notice"] = ""
+        st.session_state["bundle_only_added_upload_keys"] = set()
 
         initialise_default_attachments()
 
 if st.session_state.get("bundle_only_order_pdf_bytes"):
-    top_left, top_right = st.columns([2.2, 1.2])
+    top_left, top_right = st.columns([2.2, 1.2], gap="large")
 
     with top_left:
         st.text_input("Customer", key="bundle_only_customer_name")
@@ -922,7 +931,7 @@ if st.session_state.get("bundle_only_order_pdf_bytes"):
     doc_type = st.session_state.get("bundle_only_doc_type", "Confirmation")
 
     st.markdown("### Captured order fields")
-    f1, f2 = st.columns(2)
+    f1, f2 = st.columns(2, gap="large")
 
     with f1:
         st.text_input("Order number", key="bundle_only_order_number")
@@ -937,7 +946,7 @@ if st.session_state.get("bundle_only_order_pdf_bytes"):
     st.text_area("Customer address", key="bundle_only_customer_address", height=110)
 
     st.markdown("### Stripe payment link")
-    p1, p2 = st.columns([1, 1.4])
+    p1, p2 = st.columns([0.8, 1.6], gap="medium")
 
     with p1:
         if st.button("Create Link", use_container_width=True):
@@ -958,22 +967,21 @@ if st.session_state.get("bundle_only_order_pdf_bytes"):
                 st.session_state["bundle_only_payment_link"] = link_result["url"]
                 st.session_state["bundle_only_stripe_session_id"] = link_result["session_id"]
                 st.success("Stripe payment link created")
+                st.rerun()
             except Exception as e:
                 st.error(str(e))
 
     with p2:
         st.text_input(
             "Stripe Session ID",
-            value=st.session_state.get("bundle_only_stripe_session_id", ""),
+            key="bundle_only_stripe_session_id",
             disabled=True,
-            key="bundle_only_stripe_session_id_display",
         )
 
     st.text_input(
         "Payment link",
-        value=st.session_state.get("bundle_only_payment_link", ""),
+        key="bundle_only_payment_link",
         disabled=True,
-        key="bundle_only_payment_link_display",
     )
     st.checkbox("Apply payment link button to PDF output", key="bundle_only_embed_link_in_pdf")
 
@@ -998,7 +1006,7 @@ if st.session_state.get("bundle_only_order_pdf_bytes"):
 
     if bundle_bytes and bundle_name:
         st.markdown("### Quick download")
-        q1, q2 = st.columns([2, 1])
+        q1, q2 = st.columns([2, 1], gap="large")
         with q1:
             render_download_button(
                 f"Combine & download PDF ({file_count} files)",
@@ -1037,13 +1045,13 @@ if st.session_state.get("bundle_only_order_pdf_bytes"):
         help="Template only populates the SMS message. The SMS sends from the SMS message box below.",
     )
 
-    t1, t2 = st.columns([1.2, 2.8])
+    t1, t2 = st.columns([1.2, 2.8], gap="large")
     with t1:
         st.text_input("New template name", key="bundle_only_new_template_name")
     with t2:
         st.empty()
 
-    a1, a2, a3, a4 = st.columns(4)
+    a1, a2, a3, a4 = st.columns(4, gap="medium")
 
     with a1:
         if st.button("Load Template", use_container_width=True):
@@ -1156,7 +1164,7 @@ if st.session_state.get("bundle_only_order_pdf_bytes"):
         with st.container(border=True):
             mobile_fmt = st.session_state.get("bundle_only_sms_confirm_phone", "")
             st.warning(f"You are about to send an SMS to {mobile_fmt}")
-            c1, c2 = st.columns(2)
+            c1, c2 = st.columns(2, gap="medium")
 
             if c1.button("OK", use_container_width=True):
                 try:
@@ -1184,7 +1192,7 @@ if st.session_state.get("bundle_only_order_pdf_bytes"):
 
     if bundle_bytes and bundle_name:
         st.markdown("### Final PDF")
-        d1, d2 = st.columns([2, 1])
+        d1, d2 = st.columns([2, 1], gap="large")
 
         with d1:
             render_download_button(
@@ -1203,7 +1211,7 @@ if st.session_state.get("bundle_only_order_pdf_bytes"):
     if attachments:
         st.caption("Bundle order:")
         for i, att in enumerate(attachments, start=1):
-            r1, r2, r3 = st.columns([1, 7, 1])
+            r1, r2, r3 = st.columns([1, 7, 1], gap="medium")
             r1.write(i)
             suffix = " (default)" if att.get("locked") else ""
             r2.write(f"{att['name']}{suffix}")
