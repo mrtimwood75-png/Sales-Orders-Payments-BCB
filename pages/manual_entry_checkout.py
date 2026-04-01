@@ -2,6 +2,7 @@ import os
 from pathlib import Path
 
 import requests
+from requests.auth import HTTPBasicAuth
 import streamlit as st
 
 try:
@@ -88,14 +89,6 @@ def get_secret(name, default=""):
         return default
 
 
-def get_first_secret(*names, default=""):
-    for name in names:
-        value = str(get_secret(name, "")).strip()
-        if value:
-            return value
-    return default
-
-
 def reset_diag():
     st.session_state.manual_notification_diag = []
 
@@ -106,66 +99,64 @@ def add_diag(label, value):
     st.session_state.manual_notification_diag.append((label, value))
 
 
-def sinch_sender_payload(sender_id):
-    sender = str(sender_id or "").strip()
-    if not sender:
-        return {}
-    if sender.startswith("+") or sender.isdigit():
-        return {
-            "source_number": sender,
-            "source_number_type": "INTERNATIONAL",
-        }
-    cleaned = "".join(ch for ch in sender if ch.isalnum())
-    if cleaned:
-        return {
-            "source_number": cleaned[:11],
-            "source_number_type": "ALPHANUMERIC",
-        }
-    return {}
-
-
-def directsms_get_balance(debug=False):
-    raise NotImplementedError("Balance lookup is not enabled for the Sinch MessageMedia migration build.")
-
-
-def directsms_send_message(to_mobile, message, debug=False):
-    api_key = get_first_secret("SINCH_MESSAGEMEDIA_API_KEY", "MESSAGEMEDIA_API_KEY", "DIRECTSMS_API_KEY")
-    api_secret = get_first_secret("SINCH_MESSAGEMEDIA_API_SECRET", "MESSAGEMEDIA_API_SECRET", "DIRECTSMS_API_SECRET")
-    sender_id = get_first_secret(
-        "SINCH_MESSAGEMEDIA_SENDER_ID",
-        "MESSAGEMEDIA_SENDER_ID",
-        "SINCH_MESSAGEMEDIA_SOURCE_NUMBER",
-        "MESSAGEMEDIA_SOURCE_NUMBER",
-        "DIRECTSMS_SENDERID",
-        "DIRECTSMS_SENDER",
-        default="BoConcept",
-    )
-    base_url = get_first_secret("SINCH_MESSAGEMEDIA_BASE_URL", "MESSAGEMEDIA_BASE_URL", default="https://api.messagemedia.com")
-
+def get_messagemedia_config():
+    api_key = str(
+        get_secret("SINCH_MESSAGEMEDIA_API_KEY", "")
+        or get_secret("MESSAGEMEDIA_API_KEY", "")
+        or get_secret("DIRECTSMS_API_KEY", "")
+        or os.getenv("SINCH_MESSAGEMEDIA_API_KEY", "")
+        or os.getenv("MESSAGEMEDIA_API_KEY", "")
+        or os.getenv("DIRECTSMS_API_KEY", "")
+    ).strip()
+    api_secret = str(
+        get_secret("SINCH_MESSAGEMEDIA_API_SECRET", "")
+        or get_secret("MESSAGEMEDIA_API_SECRET", "")
+        or get_secret("DIRECTSMS_API_SECRET", "")
+        or os.getenv("SINCH_MESSAGEMEDIA_API_SECRET", "")
+        or os.getenv("MESSAGEMEDIA_API_SECRET", "")
+        or os.getenv("DIRECTSMS_API_SECRET", "")
+    ).strip()
+    sender = str(
+        get_secret("SINCH_MESSAGEMEDIA_SENDER_ID", "")
+        or get_secret("MESSAGEMEDIA_SENDER", "")
+        or get_secret("DIRECTSMS_SENDER", "")
+        or get_secret("DIRECTSMS_SENDERID", "")
+        or os.getenv("SINCH_MESSAGEMEDIA_SENDER_ID", "")
+        or os.getenv("MESSAGEMEDIA_SENDER", "")
+        or os.getenv("DIRECTSMS_SENDER", "")
+        or os.getenv("DIRECTSMS_SENDERID", "")
+    ).strip()
+    base_url = str(
+        get_secret("SINCH_MESSAGEMEDIA_BASE_URL", "")
+        or get_secret("MESSAGEMEDIA_BASE_URL", "")
+        or os.getenv("SINCH_MESSAGEMEDIA_BASE_URL", "")
+        or os.getenv("MESSAGEMEDIA_BASE_URL", "https://api.messagemedia.com/v1")
+    ).strip()
     if not api_key or not api_secret:
-        raise ValueError("Missing Sinch MessageMedia API credentials in Streamlit secrets.")
+        raise ValueError("Missing Sinch MessageMedia API key or secret in Streamlit secrets.")
+    return api_key, api_secret, sender, base_url.rstrip("/") + "/messages"
 
-    payload = {
-        "messages": [
-            {
-                "content": str(message),
-                "destination_number": normalize_mobile_au(to_mobile),
-                "format": "SMS",
-                **sinch_sender_payload(sender_id),
-            }
-        ]
+
+def messagemedia_send_message(to_mobile, message, debug=False):
+    api_key, api_secret, sender, url = get_messagemedia_config()
+
+    sms = {
+        "content": message,
+        "destination_number": normalize_mobile_au(to_mobile),
+        "format": "SMS",
+        "delivery_report": True,
     }
 
-    url = f"{base_url.rstrip('/')}/v1/messages"
+    if sender:
+        sms["source_number"] = sender
+        sms["source_number_type"] = "ALPHANUMERIC" if not sender.lstrip("+").isdigit() else "INTERNATIONAL"
+
+    payload = {"messages": [sms]}
     resp = requests.post(
         url,
-        auth=(api_key, api_secret),
-        headers={
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-            "User-Agent": "BoConcept-Manual-Checkout/1.0",
-        },
         json=payload,
+        auth=HTTPBasicAuth(api_key, api_secret),
+        headers={"Content-Type": "application/json", "Accept": "application/json"},
         timeout=30,
     )
 
@@ -178,14 +169,9 @@ def directsms_send_message(to_mobile, message, debug=False):
     resp.raise_for_status()
     body = resp.json()
     messages = body.get("messages") or []
-    if not messages or not isinstance(messages[0], dict):
-        raise ValueError(f"Unexpected Sinch MessageMedia response: {body}")
-
-    message_id = str(messages[0].get("message_id") or messages[0].get("messageId") or "").strip()
-    if not message_id:
-        raise ValueError(f"Unexpected Sinch MessageMedia response: {body}")
-
-    return message_id
+    if not messages:
+        return resp.text.strip()
+    return str(messages[0].get("message_id") or resp.text.strip())
 
 
 def default_templates():
@@ -329,37 +315,21 @@ if STRIPE_SECRET_KEY:
 else:
     st.warning("Stripe secret missing.")
 
-current_total_for_options = float(st.session_state["manual_total_amount"] or 0.0)
-payment_options = ["balance"] if current_total_for_options <= 0 else ["balance", "deposit"]
-current_mode = st.session_state["manual_payment_mode"]
-if current_mode not in payment_options:
-    current_mode = "balance"
-
 with st.form("manual_entry_form"):
     col_a, col_b, col_c = st.columns(3)
     customer_name = col_a.text_input("Customer", value=st.session_state["manual_customer_name"])
     customer_email = col_b.text_input("Email", value=st.session_state["manual_customer_email"])
     phone = col_c.text_input("Phone", value=st.session_state["manual_phone"])
 
-    col_d, col_e, col_f = st.columns(3)
+    col_d, col_e = st.columns(2)
     sales_order = col_d.text_input("Sales order", value=st.session_state["manual_sales_order"])
     order_date = col_e.text_input("Order date", value=st.session_state["manual_order_date"])
-    payment_choice = col_f.radio(
-        "Payment type",
-        options=payment_options,
-        index=payment_options.index(current_mode),
-        format_func=lambda x: "Balance" if x == "balance" else "Deposit 50%",
-        horizontal=True,
-    )
 
     col_g, col_h, col_i, col_j = st.columns(4)
     total_amount = col_g.text_input("Total", value=f"{float(st.session_state['manual_total_amount']):.2f}")
     prepayment = col_h.text_input("Prepayment", value=f"{float(st.session_state['manual_prepayment']):.2f}")
-    col_i.text_input("Balance due", value=f"{float(st.session_state['manual_balance_due']):.2f}", disabled=True)
+    col_i.text_input("Current balance", value=f"{float(st.session_state['manual_balance_due']):.2f}", disabled=True)
     col_j.text_input("Payment amount", value=f"{float(st.session_state['manual_payment_amount']):.2f}", disabled=True)
-
-    if float(st.session_state["manual_total_amount"] or 0) <= 0:
-        st.caption("Deposit 50% becomes available once Total is greater than 0.")
 
     b1, b2 = st.columns(2)
     save_clicked = b1.form_submit_button("Apply Changes")
@@ -372,8 +342,7 @@ if save_clicked:
     if parsed_balance_due < 0:
         parsed_balance_due = 0.0
 
-    effective_choice = payment_choice if parsed_total_amount > 0 else "balance"
-    payment_calc = payment_choice_to_values(effective_choice, parsed_total_amount, parsed_balance_due)
+    payment_calc = payment_choice_to_values("balance", parsed_total_amount, parsed_balance_due)
 
     st.session_state["manual_customer_name"] = customer_name
     st.session_state["manual_customer_email"] = customer_email
@@ -383,7 +352,7 @@ if save_clicked:
     st.session_state["manual_total_amount"] = parsed_total_amount
     st.session_state["manual_prepayment"] = parsed_prepayment
     st.session_state["manual_balance_due"] = parsed_balance_due
-    st.session_state["manual_payment_mode"] = payment_calc["payment_mode"]
+    st.session_state["manual_payment_mode"] = "balance"
     st.session_state["manual_payment_amount"] = payment_calc["payment_amount"]
     st.session_state["manual_payment_label"] = payment_calc["payment_label"]
     st.success("Changes applied")
@@ -408,7 +377,7 @@ if create_link_clicked:
         st.session_state["manual_total_amount"] = parsed_total_amount
         st.session_state["manual_prepayment"] = parsed_prepayment
         st.session_state["manual_balance_due"] = parsed_balance_due
-        st.session_state["manual_payment_mode"] = payment_calc["payment_mode"]
+        st.session_state["manual_payment_mode"] = "balance"
         st.session_state["manual_payment_amount"] = payment_calc["payment_amount"]
         st.session_state["manual_payment_label"] = payment_calc["payment_label"]
 
@@ -434,7 +403,7 @@ if create_link_clicked:
 if st.session_state["manual_payment_amount"] > 0:
     st.caption(
         f"{st.session_state['manual_payment_label']}  |  "
-        f"Balance due: {format_money(st.session_state['manual_balance_due'])}  |  "
+        f"Current balance: {format_money(st.session_state['manual_balance_due'])}  |  "
         f"Payment amount: {format_money(st.session_state['manual_payment_amount'])}"
     )
 
@@ -523,9 +492,7 @@ if st.session_state["manual_payment_link"]:
         disabled=True,
     )
 
-sms_col1, sms_col2 = st.columns([1, 1])
-
-with sms_col1:
+if True:
     if st.button("Send SMS to Customer", use_container_width=True):
         if not st.session_state["manual_payment_link"]:
             st.error("Create the Stripe payment link first.")
@@ -536,8 +503,6 @@ with sms_col1:
             st.session_state["manual_sms_confirm_phone"] = normalize_mobile_au(st.session_state["manual_phone"])
             st.session_state["manual_sms_confirm_open"] = True
 
-with sms_col2:
-    test_balance_clicked = st.button("Test SMS Balance", use_container_width=True)
 
 if st.session_state["manual_sms_confirm_open"]:
     with st.container(border=True):
@@ -569,7 +534,7 @@ if st.session_state["manual_sms_confirm_open"]:
                     },
                     st.session_state["manual_template_text"],
                 )
-                message_id = directsms_send_message(phone_value, sms_message, debug=True)
+                message_id = messagemedia_send_message(phone_value, sms_message, debug=True)
                 st.session_state["manual_sms_status"] = f"Sent ({message_id})"
                 st.session_state["manual_sms_confirm_open"] = False
                 st.success(f"SMS sent: {message_id}")
@@ -580,14 +545,6 @@ if st.session_state["manual_sms_confirm_open"]:
         if c2.button("Cancel", use_container_width=True):
             st.session_state["manual_sms_confirm_open"] = False
             st.rerun()
-
-if test_balance_clicked:
-    try:
-        reset_diag()
-        balance_result = directsms_get_balance(debug=True)
-        st.success(f"directSMS balance response: {balance_result}")
-    except Exception as e:
-        st.error(str(e))
 
 if st.session_state["manual_sms_status"]:
     st.text_input("SMS Status", value=st.session_state["manual_sms_status"], disabled=True)
