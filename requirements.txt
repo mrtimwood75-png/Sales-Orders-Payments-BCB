@@ -3,3 +3,7 @@ pandas
 openpyxl
 pymupdf
 stripe
+streamlit
+PyMuPDF
+requests
+stripe
