@@ -121,48 +121,24 @@ def parse_sales_order_customer_name(pdf_bytes):
 
 
 def replace_document_title_on_first_page(doc, new_title):
-    if doc.page_count == 0:
+    if fitz is None or doc.page_count == 0:
         return
 
     page = doc[0]
 
-    search_terms = ["Confirmation", "Invoice"]
-    found_rect = None
+    # Fixed area based on the heading position in your BoConcept source PDF.
+    # This avoids relying on searchable text, which the source clearly is not.
+    title_rect = fitz.Rect(278, 96, 512, 148)
 
-    for term in search_terms:
-        try:
-            rects = page.search_for(term)
-        except Exception:
-            rects = []
-        if rects:
-            found_rect = rects[0]
-            break
+    page.draw_rect(
+        title_rect,
+        color=None,
+        fill=(1, 1, 1),
+        overlay=True,
+    )
 
-    if found_rect:
-        redact_rect = fitz.Rect(
-            found_rect.x0 - 8,
-            found_rect.y0 - 6,
-            found_rect.x1 + 8,
-            found_rect.y1 + 6,
-        )
-        page.add_redact_annot(redact_rect, fill=(1, 1, 1))
-        page.apply_redactions()
-
-        page.insert_textbox(
-            redact_rect,
-            new_title,
-            fontsize=22,
-            fontname="helv",
-            align=1,
-            color=(0, 0, 0),
-            overlay=True,
-        )
-        return
-
-    fallback_rect = fitz.Rect(280, 95, 500, 145)
-    page.draw_rect(fallback_rect, color=None, fill=(1, 1, 1), overlay=True)
     page.insert_textbox(
-        fallback_rect,
+        title_rect,
         new_title,
         fontsize=22,
         fontname="helv",
@@ -226,7 +202,11 @@ def build_single_bundle_pdf_bytes(main_pdf_bytes, attachments, logo_path, docume
     if fitz is None:
         raise RuntimeError("PyMuPDF not installed")
 
-    stamped_main_bytes = stamp_main_pdf_bytes(main_pdf_bytes, logo_path, document_title)
+    stamped_main_bytes = stamp_main_pdf_bytes(
+        pdf_bytes=main_pdf_bytes,
+        logo_path=logo_path,
+        document_title=document_title,
+    )
 
     final_doc = fitz.open()
 
@@ -265,6 +245,7 @@ st.title(APP_TITLE)
 
 top_a, top_b = st.columns([3, 1])
 default_attachments = get_default_attachments()
+
 if default_attachments:
     top_a.caption(f"Locked default bundle files: {len(default_attachments)}")
 else:
@@ -303,10 +284,9 @@ if st.session_state.get("bundle_only_order_pdf_bytes"):
         )
 
     with right_col:
-        doc_type = st.radio(
+        st.radio(
             "Document type",
             ["Confirmation", "Invoice"],
-            index=0 if st.session_state.get("bundle_only_doc_type", "Confirmation") == "Confirmation" else 1,
             horizontal=True,
             key="bundle_only_doc_type",
         )
@@ -332,14 +312,15 @@ if st.session_state.get("bundle_only_order_pdf_bytes"):
 
             added_count = 0
             for up in extra_files:
-                item_key = (up.name, len(up.getvalue()), "user")
+                up_bytes = up.getvalue()
+                item_key = (up.name, len(up_bytes), "user")
                 if item_key in existing_keys:
                     continue
 
                 st.session_state["bundle_only_attachments"].append(
                     {
                         "name": up.name,
-                        "bytes": up.getvalue(),
+                        "bytes": up_bytes,
                         "locked": False,
                         "source": "user",
                     }
@@ -356,6 +337,7 @@ if st.session_state.get("bundle_only_order_pdf_bytes"):
 
     attachments = st.session_state.get("bundle_only_attachments", [])
     file_count = len(attachments) + 1
+    doc_type = st.session_state.get("bundle_only_doc_type", "Confirmation")
 
     try:
         customer_file_part = safe_filename(
