@@ -1065,40 +1065,25 @@ if st.session_state.get("order_pdf_bytes"):
         else:
             st.text_input("Operator", value="No operator records available", disabled=True)
 
-        col_a, col_b, col_c = st.columns([22, 34, 34])
+        col_a, col_b, col_c = st.columns([24, 41, 35])
         customer_name = col_a.text_input("Customer", value=st.session_state.get("customer_name", ""))
         customer_email = col_b.text_input("Email", value=st.session_state.get("customer_email", ""))
         phone = col_c.text_input("Phone", value=st.session_state.get("phone", ""))
 
-        col_d, col_e, _row2_spacer = st.columns([18, 18, 64])
+        col_d, col_e, _row2_spacer = st.columns([20, 18, 62])
         sales_order = col_d.text_input("Sales order", value=st.session_state.get("sales_order", ""))
-        order_date = col_e.text_input("Order date", value=st.session_state.get("order_date", ""))
-
-        col_g, col_h, col_i, col_j = st.columns([16, 16, 24, 28])
-        total_amount = col_g.text_input("Total", value=f"{float(st.session_state.get('total_amount', 0.0)):.2f}")
-        prepayment = col_h.text_input("Prepayment", value=f"{float(st.session_state.get('prepayment', 0.0)):.2f}")
-        balance_due = col_i.text_input("Current balance", value=f"{float(st.session_state.get('balance_due', 0.0)):.2f}")
-        payment_amount_input = col_j.text_input(
+        payment_amount_input = col_e.text_input(
             "Payment amount",
             value=f"{float(st.session_state.get('payment_amount', 0.0)):.2f}",
         )
 
-        parsed_total_amount = parse_numeric_input(total_amount, st.session_state.get("total_amount", 0.0))
-        parsed_prepayment = parse_numeric_input(prepayment, st.session_state.get("prepayment", 0.0))
-        parsed_balance_due = parse_numeric_input(balance_due, st.session_state.get("balance_due", 0.0))
-
-        payment_calc = payment_choice_to_values("balance", parsed_total_amount, parsed_balance_due)
-        overridden_payment_amount = parse_numeric_input(payment_amount_input, payment_calc["payment_amount"])
-        effective_payment_label = "Pay Balance Now"
+        overridden_payment_amount = parse_numeric_input(payment_amount_input, st.session_state.get("payment_amount", 0.0))
+        effective_payment_label = "Pay Now"
 
         option_col, _option_spacer = st.columns([18, 82])
         apply_link_to_pdf = option_col.checkbox("Apply link to PDF", value=st.session_state.get("apply_link_to_pdf", True))
 
-        st.caption(
-            f"{effective_payment_label}  |  "
-            f"Current balance: {format_money(parsed_balance_due)}  |  "
-            f"Payment amount: {format_money(overridden_payment_amount)}"
-        )
+        st.caption(f"Payment amount: {format_money(overridden_payment_amount)}")
 
         if st.session_state.get("payment_link"):
             st.text_input("Payment link", value=st.session_state.get("payment_link", ""), disabled=True)
@@ -1119,12 +1104,8 @@ if st.session_state.get("order_pdf_bytes"):
         st.session_state["customer_email"] = customer_email
         st.session_state["phone"] = normalize_mobile_au(phone)
         st.session_state["sales_order"] = sales_order
-        st.session_state["order_date"] = order_date
-        st.session_state["total_amount"] = parsed_total_amount
-        st.session_state["prepayment"] = parsed_prepayment
-        st.session_state["balance_due"] = parsed_balance_due
         st.session_state["payment_mode"] = "balance"
-        st.session_state["payment_amount"] = overridden_payment_amount
+        st.session_state["payment_amount"] = max(overridden_payment_amount, 0.0)
         st.session_state["payment_label"] = effective_payment_label
         st.session_state["apply_link_to_pdf"] = apply_link_to_pdf
         st.success("Changes applied to current session")
@@ -1132,14 +1113,13 @@ if st.session_state.get("order_pdf_bytes"):
 
     if create_link_clicked:
         try:
+            if overridden_payment_amount <= 0:
+                raise RuntimeError("Payment amount must be greater than 0")
+
             st.session_state["customer_name"] = customer_name
             st.session_state["customer_email"] = customer_email
             st.session_state["phone"] = normalize_mobile_au(phone)
             st.session_state["sales_order"] = sales_order
-            st.session_state["order_date"] = order_date
-            st.session_state["total_amount"] = parsed_total_amount
-            st.session_state["prepayment"] = parsed_prepayment
-            st.session_state["balance_due"] = parsed_balance_due
             st.session_state["payment_mode"] = "balance"
             st.session_state["payment_amount"] = overridden_payment_amount
             st.session_state["payment_label"] = effective_payment_label

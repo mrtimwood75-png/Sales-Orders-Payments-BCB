@@ -316,76 +316,54 @@ else:
     st.warning("Stripe secret missing.")
 
 with st.form("manual_entry_form"):
-    col_a, col_b, col_c = st.columns([22, 34, 34])
+    col_a, col_b, col_c = st.columns([24, 41, 35])
     customer_name = col_a.text_input("Customer", value=st.session_state["manual_customer_name"])
     customer_email = col_b.text_input("Email", value=st.session_state["manual_customer_email"])
     phone = col_c.text_input("Phone", value=st.session_state["manual_phone"])
 
-    col_d, col_e, _row2_spacer = st.columns([18, 18, 64])
+    col_d, col_e, _row2_spacer = st.columns([20, 18, 62])
     sales_order = col_d.text_input("Sales order", value=st.session_state["manual_sales_order"])
-    order_date = col_e.text_input("Order date", value=st.session_state["manual_order_date"])
-
-    col_g, col_h, col_i, col_j = st.columns([16, 16, 24, 28])
-    total_amount = col_g.text_input("Total", value=f"{float(st.session_state['manual_total_amount']):.2f}")
-    prepayment = col_h.text_input("Prepayment", value=f"{float(st.session_state['manual_prepayment']):.2f}")
-    col_i.text_input("Current balance", value=f"{float(st.session_state['manual_balance_due']):.2f}", disabled=True)
-    col_j.text_input("Payment amount", value=f"{float(st.session_state['manual_payment_amount']):.2f}", disabled=True)
+    payment_amount = col_e.text_input("Payment amount", value=f"{float(st.session_state['manual_payment_amount']):.2f}")
 
     b1, b2, _button_spacer = st.columns([18, 18, 64])
     save_clicked = b1.form_submit_button("Apply Changes")
     create_link_clicked = b2.form_submit_button("Create Stripe Link")
 
 if save_clicked:
-    parsed_total_amount = parse_numeric_input(total_amount, st.session_state["manual_total_amount"])
-    parsed_prepayment = parse_numeric_input(prepayment, st.session_state["manual_prepayment"])
-    parsed_balance_due = round(parsed_total_amount - parsed_prepayment, 2)
-    if parsed_balance_due < 0:
-        parsed_balance_due = 0.0
-
-    payment_calc = payment_choice_to_values("balance", parsed_total_amount, parsed_balance_due)
+    parsed_payment_amount = parse_numeric_input(payment_amount, st.session_state["manual_payment_amount"])
+    if parsed_payment_amount < 0:
+        parsed_payment_amount = 0.0
 
     st.session_state["manual_customer_name"] = customer_name
     st.session_state["manual_customer_email"] = customer_email
     st.session_state["manual_phone"] = normalize_mobile_au(phone)
     st.session_state["manual_sales_order"] = sales_order
-    st.session_state["manual_order_date"] = order_date
-    st.session_state["manual_total_amount"] = parsed_total_amount
-    st.session_state["manual_prepayment"] = parsed_prepayment
-    st.session_state["manual_balance_due"] = parsed_balance_due
+    st.session_state["manual_payment_amount"] = parsed_payment_amount
     st.session_state["manual_payment_mode"] = "balance"
-    st.session_state["manual_payment_amount"] = payment_calc["payment_amount"]
-    st.session_state["manual_payment_label"] = payment_calc["payment_label"]
+    st.session_state["manual_payment_label"] = "Pay Now"
     st.success("Changes applied")
     st.rerun()
 
 if create_link_clicked:
     try:
-        parsed_total_amount = parse_numeric_input(total_amount, st.session_state["manual_total_amount"])
-        parsed_prepayment = parse_numeric_input(prepayment, st.session_state["manual_prepayment"])
-        parsed_balance_due = round(parsed_total_amount - parsed_prepayment, 2)
-        if parsed_balance_due < 0:
-            parsed_balance_due = 0.0
-
-        payment_calc = payment_choice_to_values("balance", parsed_total_amount, parsed_balance_due)
+        parsed_payment_amount = parse_numeric_input(payment_amount, st.session_state["manual_payment_amount"])
+        if parsed_payment_amount <= 0:
+            raise RuntimeError("Payment amount must be greater than 0")
 
         st.session_state["manual_customer_name"] = customer_name
         st.session_state["manual_customer_email"] = customer_email
         st.session_state["manual_phone"] = normalize_mobile_au(phone)
         st.session_state["manual_sales_order"] = sales_order
-        st.session_state["manual_order_date"] = order_date
-        st.session_state["manual_total_amount"] = parsed_total_amount
-        st.session_state["manual_prepayment"] = parsed_prepayment
-        st.session_state["manual_balance_due"] = parsed_balance_due
         st.session_state["manual_payment_mode"] = "balance"
-        st.session_state["manual_payment_amount"] = payment_calc["payment_amount"]
-        st.session_state["manual_payment_label"] = payment_calc["payment_label"]
+        st.session_state["manual_payment_amount"] = parsed_payment_amount
+        st.session_state["manual_payment_label"] = "Pay Now"
 
         link_result = create_stripe_checkout_link(
             customer_name=customer_name,
             customer_email=customer_email,
             sales_order=sales_order,
-            amount=payment_calc["payment_amount"],
-            payment_label=payment_calc["payment_label"],
+            amount=parsed_payment_amount,
+            payment_label="Pay Now",
             phone=phone,
         )
 
@@ -400,11 +378,7 @@ if create_link_clicked:
         st.error(str(e))
 
 if st.session_state["manual_payment_amount"] > 0:
-    st.caption(
-        f"{st.session_state['manual_payment_label']}  |  "
-        f"Current balance: {format_money(st.session_state['manual_balance_due'])}  |  "
-        f"Payment amount: {format_money(st.session_state['manual_payment_amount'])}"
-    )
+    st.caption(f"Payment amount: {format_money(st.session_state['manual_payment_amount'])}")
 
 if st.session_state["manual_payment_link"]:
     st.text_input("Payment link", value=st.session_state["manual_payment_link"], disabled=True)
