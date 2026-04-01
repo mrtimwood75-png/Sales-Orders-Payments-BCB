@@ -1,4 +1,5 @@
 import json
+import math
 import os
 import re
 from pathlib import Path
@@ -536,39 +537,67 @@ def overlay_tax_invoice_title(doc):
     )
 
 
-def draw_rounded_button(page, rect, fill_rgb, text, text_rgb=(1, 1, 1)):
-    radius = min((rect.y1 - rect.y0) / 2.0, 7)
+def interpolate_color(c1, c2, t):
+    return tuple(c1[i] + (c2[i] - c1[i]) * t for i in range(3))
 
+
+def draw_soft_shadow(page, rect):
+    shadow_rect = fitz.Rect(rect.x0 + 1.5, rect.y0 + 1.5, rect.x1 + 1.5, rect.y1 + 1.5)
     page.draw_rect(
-        rect,
-        color=fill_rgb,
-        fill=fill_rgb,
-        overlay=True,
+        shadow_rect,
+        color=None,
+        fill=(0.15, 0.22, 0.32),
+        fill_opacity=0.14,
+        overlay=False,
     )
 
-    for corner in [
-        fitz.Point(rect.x0 + radius, rect.y0 + radius),
-        fitz.Point(rect.x1 - radius, rect.y0 + radius),
-        fitz.Point(rect.x0 + radius, rect.y1 - radius),
-        fitz.Point(rect.x1 - radius, rect.y1 - radius),
-    ]:
-        page.draw_circle(
-            corner,
-            radius,
-            color=fill_rgb,
-            fill=fill_rgb,
+
+def draw_gradient_button(page, rect, text):
+    top_color = (46 / 255, 134 / 255, 222 / 255)
+    bottom_color = (21 / 255, 101 / 255, 192 / 255)
+    border_color = (13 / 255, 71 / 255, 161 / 255)
+    highlight_color = (0.82, 0.91, 1.0)
+
+    draw_soft_shadow(page, rect)
+
+    steps = 28
+    stripe_h = rect.height / steps
+    for i in range(steps):
+        y0 = rect.y0 + i * stripe_h
+        y1 = rect.y0 + (i + 1) * stripe_h
+        color = interpolate_color(top_color, bottom_color, i / max(steps - 1, 1))
+        page.draw_rect(
+            fitz.Rect(rect.x0, y0, rect.x1, y1),
+            color=None,
+            fill=color,
             overlay=True,
         )
 
-    inner_rect = fitz.Rect(rect.x0 + radius, rect.y0, rect.x1 - radius, rect.y1)
-    page.draw_rect(inner_rect, color=fill_rgb, fill=fill_rgb, overlay=True)
+    page.draw_rect(rect, color=border_color, width=0.8, overlay=True)
+
+    highlight_rect = fitz.Rect(rect.x0 + 1.5, rect.y0 + 1.5, rect.x1 - 1.5, rect.y0 + 4.0)
+    page.draw_rect(
+        highlight_rect,
+        color=None,
+        fill=highlight_color,
+        fill_opacity=0.28,
+        overlay=True,
+    )
+
+    inner_border = fitz.Rect(rect.x0 + 1.2, rect.y0 + 1.2, rect.x1 - 1.2, rect.y1 - 1.2)
+    page.draw_rect(
+        inner_border,
+        color=(0.72, 0.86, 1.0),
+        width=0.45,
+        overlay=True,
+    )
 
     page.insert_textbox(
-        fitz.Rect(rect.x0, rect.y0 + 0.5, rect.x1, rect.y1),
+        fitz.Rect(rect.x0, rect.y0 + 0.4, rect.x1, rect.y1),
         text,
         fontname="helv",
-        fontsize=10.5,
-        color=text_rgb,
+        fontsize=9.8,
+        color=(1, 1, 1),
         align=1,
         overlay=True,
     )
@@ -603,25 +632,17 @@ def add_payment_button_to_pdf(doc, payment_url):
 
         total_rect = total_rects[-1]
 
-        button_w = 150
-        button_h = 22
-        gap = 18
+        button_w = 128
+        button_h = 20
+        gap = 16
 
         x1 = max(total_rect.x0 - gap, 18 + button_w)
         x0 = x1 - button_w
-        y0 = max(total_rect.y0 - 3, 18)
+        y0 = max(total_rect.y0 - 1.5, 18)
         y1 = y0 + button_h
 
         button_rect = fitz.Rect(x0, y0, x1, y1)
-
-        blue_fill = (0 / 255, 94 / 255, 184 / 255)
-        draw_rounded_button(
-            page,
-            button_rect,
-            blue_fill,
-            "Click to Pay",
-            text_rgb=(1, 1, 1),
-        )
+        draw_gradient_button(page, button_rect, "Click to Pay")
 
         page.insert_link(
             {
@@ -635,17 +656,8 @@ def add_payment_button_to_pdf(doc, payment_url):
 
     if not placed:
         page = doc[doc.page_count - 1]
-        button_rect = fitz.Rect(page.rect.width - 180, page.rect.height - 44, page.rect.width - 30, page.rect.height - 22)
-
-        blue_fill = (0 / 255, 94 / 255, 184 / 255)
-        draw_rounded_button(
-            page,
-            button_rect,
-            blue_fill,
-            "Click to Pay",
-            text_rgb=(1, 1, 1),
-        )
-
+        button_rect = fitz.Rect(page.rect.width - 158, page.rect.height - 42, page.rect.width - 30, page.rect.height - 22)
+        draw_gradient_button(page, button_rect, "Click to Pay")
         page.insert_link(
             {
                 "kind": fitz.LINK_URI,
