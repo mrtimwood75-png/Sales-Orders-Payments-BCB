@@ -29,6 +29,8 @@ STRIPE_SUCCESS_URL = st.secrets.get("STRIPE_SUCCESS_URL", os.getenv("STRIPE_SUCC
 STRIPE_CANCEL_URL = st.secrets.get("STRIPE_CANCEL_URL", os.getenv("STRIPE_CANCEL_URL", "")).strip()
 STRIPE_CURRENCY = st.secrets.get("STRIPE_CURRENCY", os.getenv("STRIPE_CURRENCY", "aud")).strip().lower()
 
+st.set_page_config(page_title=APP_TITLE, layout="wide")
+
 
 def resolve_logo_path():
     candidates = [
@@ -487,7 +489,6 @@ def find_confirmation_span(page):
                         {
                             "rect": fitz.Rect(x0, y0, x1, y1),
                             "size": float(span.get("size", 18)),
-                            "font": str(span.get("font", "")),
                         }
                     )
 
@@ -496,13 +497,6 @@ def find_confirmation_span(page):
 
     candidates.sort(key=lambda s: (s["rect"].y0, -(s["rect"].width)))
     return candidates[0]
-
-
-def choose_pymupdf_font(font_name):
-    name = (font_name or "").lower()
-    if "bold" in name:
-        return "helv"
-    return "helv"
 
 
 def overlay_tax_invoice_title(doc):
@@ -550,65 +544,78 @@ def add_payment_button_to_pdf(doc, payment_url):
     if doc.page_count > 1:
         target_pages.insert(0, doc.page_count - 2)
 
-    label_priority = ["Balance due", "balance due", "Total", "total", "Amount", "amount"]
     placed = False
 
     for page_index in target_pages:
         page = doc[page_index]
-        found = None
 
-        for label in label_priority:
+        try:
+            total_rects = page.search_for("Total")
+        except Exception:
+            total_rects = []
+
+        if not total_rects:
             try:
-                rects = page.search_for(label)
+                total_rects = page.search_for("total")
             except Exception:
-                rects = []
-            if rects:
-                found = rects[-1]
-                break
+                total_rects = []
 
-        if found is None:
+        if not total_rects:
             continue
 
-        button_w = 115
-        button_h = 20
+        total_rect = total_rects[-1]
 
-        x = min(found.x1 + 14, page.rect.width - button_w - 18)
-        y = max(found.y0 - 2, 18)
+        button_w = 150
+        button_h = 22
+        gap = 18
 
-        if x < found.x1 + 4:
-            x = max(found.x0, 18)
-            y = min(found.y1 + 8, page.rect.height - button_h - 18)
+        x1 = max(total_rect.x0 - gap, 18 + button_w)
+        x0 = x1 - button_w
+        y0 = max(total_rect.y0 - 3, 18)
+        y1 = y0 + button_h
 
-        button_rect = fitz.Rect(x, y, x + button_w, y + button_h)
+        button_rect = fitz.Rect(x0, y0, x1, y1)
 
         page.draw_rect(button_rect, color=(0, 0, 0), fill=(0, 0, 0), overlay=True)
         page.insert_textbox(
             button_rect,
             "Pay Now",
             fontname="helv",
-            fontsize=9,
+            fontsize=10,
             color=(1, 1, 1),
             align=1,
             overlay=True,
         )
-        page.insert_link({"kind": fitz.LINK_URI, "from": button_rect, "uri": payment_url})
+        page.insert_link(
+            {
+                "kind": fitz.LINK_URI,
+                "from": button_rect,
+                "uri": payment_url,
+            }
+        )
         placed = True
         break
 
     if not placed:
         page = doc[doc.page_count - 1]
-        button_rect = fitz.Rect(page.rect.width - 133, page.rect.height - 44, page.rect.width - 18, page.rect.height - 24)
+        button_rect = fitz.Rect(page.rect.width - 180, page.rect.height - 44, page.rect.width - 30, page.rect.height - 22)
         page.draw_rect(button_rect, color=(0, 0, 0), fill=(0, 0, 0), overlay=True)
         page.insert_textbox(
             button_rect,
             "Pay Now",
             fontname="helv",
-            fontsize=9,
+            fontsize=10,
             color=(1, 1, 1),
             align=1,
             overlay=True,
         )
-        page.insert_link({"kind": fitz.LINK_URI, "from": button_rect, "uri": payment_url})
+        page.insert_link(
+            {
+                "kind": fitz.LINK_URI,
+                "from": button_rect,
+                "uri": payment_url,
+            }
+        )
 
 
 def stamp_main_pdf_bytes(pdf_bytes, logo_path, doc_type, payment_url="", embed_payment_link=False):
@@ -835,19 +842,18 @@ def build_sms_message(payload, template_text):
     )
 
 
-def render_download_button(button_label, bundle_bytes, bundle_name, file_count, doc_type, location_tag):
+def render_download_button(button_label, bundle_bytes, bundle_name, file_count, doc_type):
     st.download_button(
         button_label,
         data=bundle_bytes,
         file_name=bundle_name,
         mime="application/pdf",
         use_container_width=True,
-        key=f"bundle_only_download_{location_tag}_{bundle_name}_{len(bundle_bytes)}_{doc_type}_{st.session_state.get('bundle_only_embed_link_in_pdf', False)}",
+        key=f"bundle_only_download_{bundle_name}_{len(bundle_bytes)}_{file_count}_{doc_type}_{st.session_state.get('bundle_only_embed_link_in_pdf', False)}",
     )
 
 
 init_state()
-st.set_page_config(page_title=APP_TITLE, layout="wide")
 
 top_nav_left, top_nav_right = st.columns([1, 5])
 with top_nav_left:
@@ -1005,18 +1011,19 @@ if st.session_state.get("bundle_only_order_pdf_bytes"):
         st.error(f"Bundle build failed: {e}")
 
     if bundle_bytes and bundle_name:
-        st.markdown("### Quick download")
-        q1, q2 = st.columns([2, 1], gap="large")
-        with q1:
+        st.markdown("### PDF Export")
+        d1, d2 = st.columns([2, 1], gap="large")
+
+        with d1:
             render_download_button(
                 f"Combine & download PDF ({file_count} files)",
                 bundle_bytes,
                 bundle_name,
                 file_count,
                 doc_type,
-                "top",
             )
-        with q2:
+
+        with d2:
             if st.session_state.get("bundle_only_embed_link_in_pdf", False):
                 st.caption("Includes PDF payment link")
 
@@ -1189,24 +1196,6 @@ if st.session_state.get("bundle_only_order_pdf_bytes"):
             if c2.button("Cancel", use_container_width=True):
                 st.session_state["bundle_only_sms_confirm_open"] = False
                 st.rerun()
-
-    if bundle_bytes and bundle_name:
-        st.markdown("### Final PDF")
-        d1, d2 = st.columns([2, 1], gap="large")
-
-        with d1:
-            render_download_button(
-                f"Combine & download PDF ({file_count} files)",
-                bundle_bytes,
-                bundle_name,
-                file_count,
-                doc_type,
-                "bottom",
-            )
-
-        with d2:
-            if st.session_state.get("bundle_only_embed_link_in_pdf", False):
-                st.caption("Includes PDF payment link")
 
     if attachments:
         st.caption("Bundle order:")
