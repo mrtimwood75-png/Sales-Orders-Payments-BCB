@@ -536,6 +536,44 @@ def overlay_tax_invoice_title(doc):
     )
 
 
+def draw_rounded_button(page, rect, fill_rgb, text, text_rgb=(1, 1, 1)):
+    radius = min((rect.y1 - rect.y0) / 2.0, 7)
+
+    page.draw_rect(
+        rect,
+        color=fill_rgb,
+        fill=fill_rgb,
+        overlay=True,
+    )
+
+    for corner in [
+        fitz.Point(rect.x0 + radius, rect.y0 + radius),
+        fitz.Point(rect.x1 - radius, rect.y0 + radius),
+        fitz.Point(rect.x0 + radius, rect.y1 - radius),
+        fitz.Point(rect.x1 - radius, rect.y1 - radius),
+    ]:
+        page.draw_circle(
+            corner,
+            radius,
+            color=fill_rgb,
+            fill=fill_rgb,
+            overlay=True,
+        )
+
+    inner_rect = fitz.Rect(rect.x0 + radius, rect.y0, rect.x1 - radius, rect.y1)
+    page.draw_rect(inner_rect, color=fill_rgb, fill=fill_rgb, overlay=True)
+
+    page.insert_textbox(
+        fitz.Rect(rect.x0, rect.y0 + 0.5, rect.x1, rect.y1),
+        text,
+        fontname="helv",
+        fontsize=10.5,
+        color=text_rgb,
+        align=1,
+        overlay=True,
+    )
+
+
 def add_payment_button_to_pdf(doc, payment_url):
     if fitz is None or not payment_url or doc.page_count == 0:
         return
@@ -576,16 +614,15 @@ def add_payment_button_to_pdf(doc, payment_url):
 
         button_rect = fitz.Rect(x0, y0, x1, y1)
 
-        page.draw_rect(button_rect, color=(0, 0, 0), fill=(0, 0, 0), overlay=True)
-        page.insert_textbox(
+        blue_fill = (0 / 255, 94 / 255, 184 / 255)
+        draw_rounded_button(
+            page,
             button_rect,
-            "Pay Now",
-            fontname="helv",
-            fontsize=10,
-            color=(1, 1, 1),
-            align=1,
-            overlay=True,
+            blue_fill,
+            "Click to Pay",
+            text_rgb=(1, 1, 1),
         )
+
         page.insert_link(
             {
                 "kind": fitz.LINK_URI,
@@ -599,16 +636,16 @@ def add_payment_button_to_pdf(doc, payment_url):
     if not placed:
         page = doc[doc.page_count - 1]
         button_rect = fitz.Rect(page.rect.width - 180, page.rect.height - 44, page.rect.width - 30, page.rect.height - 22)
-        page.draw_rect(button_rect, color=(0, 0, 0), fill=(0, 0, 0), overlay=True)
-        page.insert_textbox(
+
+        blue_fill = (0 / 255, 94 / 255, 184 / 255)
+        draw_rounded_button(
+            page,
             button_rect,
-            "Pay Now",
-            fontname="helv",
-            fontsize=10,
-            color=(1, 1, 1),
-            align=1,
-            overlay=True,
+            blue_fill,
+            "Click to Pay",
+            text_rgb=(1, 1, 1),
         )
+
         page.insert_link(
             {
                 "kind": fitz.LINK_URI,
