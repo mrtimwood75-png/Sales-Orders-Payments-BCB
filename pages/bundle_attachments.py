@@ -61,6 +61,7 @@ def reset_session():
         "bundle_only_attachments",
         "bundle_only_customer_name",
         "bundle_only_doc_type",
+        "bundle_only_order_fields",
     ]
     for key in keys:
         if key in st.session_state:
@@ -98,37 +99,141 @@ def get_page_text_left_margin(page):
     return max(18, min(left, 80))
 
 
-def parse_sales_order_customer_name(pdf_bytes):
-    if fitz is None:
+def extract_text_from_page(doc, page_index):
+    if page_index < 0 or page_index >= doc.page_count:
         return ""
-
     try:
-        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-        first_page = doc[0].get_text("text") if doc.page_count else ""
-        doc.close()
+        return doc[page_index].get_text("text")
     except Exception:
         return ""
 
-    lines = [clean_text(x) for x in first_page.splitlines() if clean_text(x)]
-    for line in lines[:12]:
-        if not re.search(
-            r"sales order|date|phone|email|misc\. charges|gst|total|prepayment|balance due",
-            line,
-            re.IGNORECASE,
-        ):
-            return line
-    return ""
+
+def extract_sales_order_fields(pdf_bytes):
+    fields = {
+        "customer_name": "",
+        "order_number": "",
+        "order_total": "",
+        "order_balance": "",
+        "customer_address": "",
+        "email": "",
+        "phone": "",
+    }
+
+    if fitz is None:
+        return fields
+
+    try:
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    except Exception:
+        return fields
+
+    try:
+        first_page_text = extract_text_from_page(doc, 0)
+        last_page_text = extract_text_from_page(doc, doc.page_count - 1) if doc.page_count else ""
+        second_last_text = extract_text_from_page(doc, doc.page_count - 2) if doc.page_count > 1 else ""
+        all_text = "\n".join([first_page_text, second_last_text, last_page_text])
+
+        lines = [clean_text(x) for x in first_page_text.splitlines() if clean_text(x)]
+
+        for line in lines[:12]:
+            if not re.search(
+                r"sales order|date|phone|email|misc\. charges|gst|total|prepayment|balance due|confirmation|tax invoice",
+                line,
+                re.IGNORECASE,
+            ):
+                fields["customer_name"] = line
+                break
+
+        email_match = re.search(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", all_text, re.IGNORECASE)
+        if email_match:
+            fields["email"] = email_match.group(0)
+
+        phone_match = re.search(r"(?:mobile phone|phone)\s+([0-9][0-9 ]{7,})", all_text, re.IGNORECASE)
+        if phone_match:
+            fields["phone"] = clean_text(phone_match.group(1))
+
+        if not fields["phone"]:
+            phone_match = re.search(r"\b(0\d{8,10})\b", all_text)
+            if phone_match:
+                fields["phone"] = phone_match.group(1)
+
+        order_patterns = [
+            r"sales order\s*([A-Za-z0-9\-]+)",
+            r"\b(os[- ]?\d+)\b",
+        ]
+        for pattern in order_patterns:
+            m = re.search(pattern, all_text, re.IGNORECASE)
+            if m:
+                fields["order_number"] = clean_text(m.group(1) if m.lastindex else m.group(0))
+                break
+
+        address_lines = []
+        capture = False
+        for line in lines:
+            lower = line.lower()
+            if "delivery address" in lower:
+                capture = True
+                continue
+            if capture:
+                if re.search(
+                    r"payment|terms of delivery|estimated date|our ref|customer requisition|currency|article|qty|description",
+                    line,
+                    re.IGNORECASE,
+                ):
+                    break
+                address_lines.append(line)
+
+        if address_lines:
+            fields["customer_address"] = "\n".join(address_lines).strip()
+        else:
+            if fields["customer_name"] and fields["customer_name"] in lines:
+                start_idx = lines.index(fields["customer_name"]) + 1
+                fallback = []
+                for line in lines[start_idx:start_idx + 6]:
+                    if re.search(
+                        r"phone|email|payment|terms of delivery|estimated date|article|qty|description",
+                        line,
+                        re.IGNORECASE,
+                    ):
+                        break
+                    fallback.append(line)
+                fields["customer_address"] = "\n".join(fallback).strip()
+
+        balance_source = "\n".join([second_last_text, last_page_text])
+
+        total_patterns = [
+            r"(?:order total|total)\s*(?:aud)?\s*([0-9\.,]+)",
+            r"total\s+([0-9\.,]+)",
+        ]
+        for pattern in total_patterns:
+            m = re.search(pattern, balance_source, re.IGNORECASE)
+            if m:
+                fields["order_total"] = clean_text(m.group(1))
+                break
+
+        balance_patterns = [
+            r"balance due\s*(?:aud)?\s*([0-9\.,]+)",
+            r"balance\s*(?:aud)?\s*([0-9\.,]+)",
+        ]
+        for pattern in balance_patterns:
+            m = re.search(pattern, balance_source, re.IGNORECASE)
+            if m:
+                fields["order_balance"] = clean_text(m.group(1))
+                break
+
+    finally:
+        doc.close()
+
+    return fields
 
 
-def replace_document_title_on_first_page(doc, new_title):
+def overlay_tax_invoice_title(doc):
     if fitz is None or doc.page_count == 0:
         return
 
     page = doc[0]
 
-    # Fixed area based on the heading position in your BoConcept source PDF.
-    # This avoids relying on searchable text, which the source clearly is not.
-    title_rect = fitz.Rect(278, 96, 512, 148)
+    title_rect = fitz.Rect(300, 118, 485, 160)
 
     page.draw_rect(
         title_rect,
@@ -139,8 +244,8 @@ def replace_document_title_on_first_page(doc, new_title):
 
     page.insert_textbox(
         title_rect,
-        new_title,
-        fontsize=22,
+        "Tax Invoice",
+        fontsize=18,
         fontname="helv",
         align=1,
         color=(0, 0, 0),
@@ -148,7 +253,7 @@ def replace_document_title_on_first_page(doc, new_title):
     )
 
 
-def stamp_main_pdf_bytes(pdf_bytes, logo_path, document_title):
+def stamp_main_pdf_bytes(pdf_bytes, logo_path, doc_type):
     if fitz is None:
         raise RuntimeError("PyMuPDF not installed")
 
@@ -165,7 +270,8 @@ def stamp_main_pdf_bytes(pdf_bytes, logo_path, document_title):
                 overlay=True,
             )
 
-    replace_document_title_on_first_page(doc, document_title)
+    if doc_type == "Tax Invoice":
+        overlay_tax_invoice_title(doc)
 
     output = doc.tobytes(garbage=4, deflate=True)
     doc.close()
@@ -198,15 +304,11 @@ def append_file_bytes_to_pdf(bundle_doc, file_name, file_bytes):
     raise RuntimeError(f"Unsupported attachment type: {file_name}")
 
 
-def build_single_bundle_pdf_bytes(main_pdf_bytes, attachments, logo_path, document_title):
+def build_single_bundle_pdf_bytes(main_pdf_bytes, attachments, logo_path, doc_type):
     if fitz is None:
         raise RuntimeError("PyMuPDF not installed")
 
-    stamped_main_bytes = stamp_main_pdf_bytes(
-        pdf_bytes=main_pdf_bytes,
-        logo_path=logo_path,
-        document_title=document_title,
-    )
+    stamped_main_bytes = stamp_main_pdf_bytes(main_pdf_bytes, logo_path, doc_type)
 
     final_doc = fitz.open()
 
@@ -270,7 +372,11 @@ if uploaded_pdf is not None:
     ):
         st.session_state["bundle_only_order_pdf_name"] = uploaded_pdf.name
         st.session_state["bundle_only_order_pdf_bytes"] = pdf_bytes
-        st.session_state["bundle_only_customer_name"] = parse_sales_order_customer_name(pdf_bytes)
+
+        fields = extract_sales_order_fields(pdf_bytes)
+        st.session_state["bundle_only_order_fields"] = fields
+        st.session_state["bundle_only_customer_name"] = fields.get("customer_name", "")
+
         initialise_default_attachments()
 
 if st.session_state.get("bundle_only_order_pdf_bytes"):
@@ -286,7 +392,7 @@ if st.session_state.get("bundle_only_order_pdf_bytes"):
     with right_col:
         st.radio(
             "Document type",
-            ["Confirmation", "Invoice"],
+            ["Confirmation", "Tax Invoice"],
             horizontal=True,
             key="bundle_only_doc_type",
         )
@@ -340,17 +446,19 @@ if st.session_state.get("bundle_only_order_pdf_bytes"):
     doc_type = st.session_state.get("bundle_only_doc_type", "Confirmation")
 
     try:
+        fields = st.session_state.get("bundle_only_order_fields", {})
         customer_file_part = safe_filename(
-            st.session_state.get("bundle_only_customer_name", ""),
+            fields.get("customer_name", "") or st.session_state.get("bundle_only_customer_name", ""),
             "customer",
         )
-        bundle_name = f"{customer_file_part}_{doc_type.lower()}.pdf"
+        doc_suffix = "tax_invoice" if doc_type == "Tax Invoice" else "confirmation"
+        bundle_name = f"{customer_file_part}_{doc_suffix}.pdf"
 
         bundle_bytes = build_single_bundle_pdf_bytes(
             main_pdf_bytes=st.session_state["bundle_only_order_pdf_bytes"],
             attachments=attachments,
             logo_path=LOGO_PATH,
-            document_title=doc_type,
+            doc_type=doc_type,
         )
 
         a2.download_button(
@@ -383,5 +491,15 @@ if st.session_state.get("bundle_only_order_pdf_bytes"):
                     attachments.pop(i - 1)
                     st.session_state["bundle_only_attachments"] = attachments
                     st.rerun()
+
+    fields = st.session_state.get("bundle_only_order_fields", {})
+    if fields:
+        with st.expander("Captured order fields", expanded=False):
+            st.text_input("Order number", value=fields.get("order_number", ""), disabled=True)
+            st.text_input("Order total", value=fields.get("order_total", ""), disabled=True)
+            st.text_input("Order balance", value=fields.get("order_balance", ""), disabled=True)
+            st.text_input("Email", value=fields.get("email", ""), disabled=True)
+            st.text_input("Phone", value=fields.get("phone", ""), disabled=True)
+            st.text_area("Customer address", value=fields.get("customer_address", ""), disabled=True, height=120)
 else:
     st.info("Upload a sales order PDF to begin.")
