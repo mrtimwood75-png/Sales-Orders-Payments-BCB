@@ -323,14 +323,25 @@ with st.form("manual_entry_form"):
 
     col_d, col_e, _row2_spacer = st.columns([20, 18, 62])
     sales_order = col_d.text_input("Sales order", value=st.session_state["manual_sales_order"])
+<<<<<<< HEAD
     payment_amount = col_e.text_input("Payment amount", value=f"{float(st.session_state['manual_payment_amount']):.2f}")
+=======
+    payment_amount_input = col_e.text_input(
+        "Payment amount",
+        value=f"{float(st.session_state['manual_payment_amount']):.2f}",
+    )
+>>>>>>> fdc8eb83f1455c3e51424b407aa98ca0150a0b32
 
     b1, b2, _button_spacer = st.columns([18, 18, 64])
     save_clicked = b1.form_submit_button("Apply Changes")
     create_link_clicked = b2.form_submit_button("Create Stripe Link")
 
 if save_clicked:
+<<<<<<< HEAD
     parsed_payment_amount = parse_numeric_input(payment_amount, st.session_state["manual_payment_amount"])
+=======
+    parsed_payment_amount = parse_numeric_input(payment_amount_input, st.session_state["manual_payment_amount"])
+>>>>>>> fdc8eb83f1455c3e51424b407aa98ca0150a0b32
     if parsed_payment_amount < 0:
         parsed_payment_amount = 0.0
 
@@ -338,32 +349,62 @@ if save_clicked:
     st.session_state["manual_customer_email"] = customer_email
     st.session_state["manual_phone"] = normalize_mobile_au(phone)
     st.session_state["manual_sales_order"] = sales_order
+<<<<<<< HEAD
     st.session_state["manual_payment_amount"] = parsed_payment_amount
     st.session_state["manual_payment_mode"] = "balance"
     st.session_state["manual_payment_label"] = "Pay Now"
+=======
+    st.session_state["manual_order_date"] = ""
+    st.session_state["manual_total_amount"] = 0.0
+    st.session_state["manual_prepayment"] = 0.0
+    st.session_state["manual_balance_due"] = 0.0
+    st.session_state["manual_payment_mode"] = "balance"
+    st.session_state["manual_payment_amount"] = parsed_payment_amount
+    st.session_state["manual_payment_label"] = "Payment Request"
+>>>>>>> fdc8eb83f1455c3e51424b407aa98ca0150a0b32
     st.success("Changes applied")
     st.rerun()
 
 if create_link_clicked:
     try:
+<<<<<<< HEAD
         parsed_payment_amount = parse_numeric_input(payment_amount, st.session_state["manual_payment_amount"])
         if parsed_payment_amount <= 0:
             raise RuntimeError("Payment amount must be greater than 0")
+=======
+        parsed_payment_amount = parse_numeric_input(payment_amount_input, st.session_state["manual_payment_amount"])
+        if parsed_payment_amount < 0:
+            parsed_payment_amount = 0.0
+>>>>>>> fdc8eb83f1455c3e51424b407aa98ca0150a0b32
 
         st.session_state["manual_customer_name"] = customer_name
         st.session_state["manual_customer_email"] = customer_email
         st.session_state["manual_phone"] = normalize_mobile_au(phone)
         st.session_state["manual_sales_order"] = sales_order
+<<<<<<< HEAD
         st.session_state["manual_payment_mode"] = "balance"
         st.session_state["manual_payment_amount"] = parsed_payment_amount
         st.session_state["manual_payment_label"] = "Pay Now"
+=======
+        st.session_state["manual_order_date"] = ""
+        st.session_state["manual_total_amount"] = 0.0
+        st.session_state["manual_prepayment"] = 0.0
+        st.session_state["manual_balance_due"] = 0.0
+        st.session_state["manual_payment_mode"] = "balance"
+        st.session_state["manual_payment_amount"] = parsed_payment_amount
+        st.session_state["manual_payment_label"] = "Payment Request"
+>>>>>>> fdc8eb83f1455c3e51424b407aa98ca0150a0b32
 
         link_result = create_stripe_checkout_link(
             customer_name=customer_name,
             customer_email=customer_email,
             sales_order=sales_order,
             amount=parsed_payment_amount,
+<<<<<<< HEAD
             payment_label="Pay Now",
+=======
+            payment_label="Payment Request",
+>>>>>>> fdc8eb83f1455c3e51424b407aa98ca0150a0b32
             phone=phone,
         )
 
@@ -378,7 +419,14 @@ if create_link_clicked:
         st.error(str(e))
 
 if st.session_state["manual_payment_amount"] > 0:
+<<<<<<< HEAD
     st.caption(f"Payment amount: {format_money(st.session_state['manual_payment_amount'])}")
+=======
+    st.caption(
+        f"{st.session_state['manual_payment_label']}  |  "
+        f"Payment amount: {format_money(st.session_state['manual_payment_amount'])}"
+    )
+>>>>>>> fdc8eb83f1455c3e51424b407aa98ca0150a0b32
 
 if st.session_state["manual_payment_link"]:
     st.text_input("Payment link", value=st.session_state["manual_payment_link"], disabled=True)

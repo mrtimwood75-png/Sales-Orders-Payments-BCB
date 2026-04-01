@@ -1077,13 +1077,25 @@ if st.session_state.get("order_pdf_bytes"):
             value=f"{float(st.session_state.get('payment_amount', 0.0)):.2f}",
         )
 
+<<<<<<< HEAD
         overridden_payment_amount = parse_numeric_input(payment_amount_input, st.session_state.get("payment_amount", 0.0))
         effective_payment_label = "Pay Now"
+=======
+        parsed_payment_amount = parse_numeric_input(payment_amount_input, st.session_state.get("payment_amount", 0.0))
+        effective_payment_label = "Payment Request"
+>>>>>>> fdc8eb83f1455c3e51424b407aa98ca0150a0b32
 
         option_col, _option_spacer = st.columns([18, 82])
         apply_link_to_pdf = option_col.checkbox("Apply link to PDF", value=st.session_state.get("apply_link_to_pdf", True))
 
+<<<<<<< HEAD
         st.caption(f"Payment amount: {format_money(overridden_payment_amount)}")
+=======
+        st.caption(
+            f"{effective_payment_label}  |  "
+            f"Payment amount: {format_money(parsed_payment_amount)}"
+        )
+>>>>>>> fdc8eb83f1455c3e51424b407aa98ca0150a0b32
 
         if st.session_state.get("payment_link"):
             st.text_input("Payment link", value=st.session_state.get("payment_link", ""), disabled=True)
@@ -1104,8 +1116,17 @@ if st.session_state.get("order_pdf_bytes"):
         st.session_state["customer_email"] = customer_email
         st.session_state["phone"] = normalize_mobile_au(phone)
         st.session_state["sales_order"] = sales_order
+<<<<<<< HEAD
         st.session_state["payment_mode"] = "balance"
         st.session_state["payment_amount"] = max(overridden_payment_amount, 0.0)
+=======
+        st.session_state["order_date"] = ""
+        st.session_state["total_amount"] = 0.0
+        st.session_state["prepayment"] = 0.0
+        st.session_state["balance_due"] = 0.0
+        st.session_state["payment_mode"] = "balance"
+        st.session_state["payment_amount"] = parsed_payment_amount
+>>>>>>> fdc8eb83f1455c3e51424b407aa98ca0150a0b32
         st.session_state["payment_label"] = effective_payment_label
         st.session_state["apply_link_to_pdf"] = apply_link_to_pdf
         st.success("Changes applied to current session")
@@ -1120,8 +1141,15 @@ if st.session_state.get("order_pdf_bytes"):
             st.session_state["customer_email"] = customer_email
             st.session_state["phone"] = normalize_mobile_au(phone)
             st.session_state["sales_order"] = sales_order
+<<<<<<< HEAD
+=======
+            st.session_state["order_date"] = ""
+            st.session_state["total_amount"] = 0.0
+            st.session_state["prepayment"] = 0.0
+            st.session_state["balance_due"] = 0.0
+>>>>>>> fdc8eb83f1455c3e51424b407aa98ca0150a0b32
             st.session_state["payment_mode"] = "balance"
-            st.session_state["payment_amount"] = overridden_payment_amount
+            st.session_state["payment_amount"] = parsed_payment_amount
             st.session_state["payment_label"] = effective_payment_label
             st.session_state["apply_link_to_pdf"] = apply_link_to_pdf
 
@@ -1129,7 +1157,7 @@ if st.session_state.get("order_pdf_bytes"):
                 customer_name=customer_name,
                 customer_email=customer_email,
                 sales_order=sales_order,
-                amount=overridden_payment_amount,
+                amount=parsed_payment_amount,
                 payment_label=effective_payment_label,
                 phone=phone,
             )
@@ -1149,12 +1177,12 @@ if st.session_state.get("order_pdf_bytes"):
         st.session_state["customer_email"] = customer_email
         st.session_state["phone"] = normalize_mobile_au(phone)
         st.session_state["sales_order"] = sales_order
-        st.session_state["order_date"] = order_date
-        st.session_state["total_amount"] = parsed_total_amount
-        st.session_state["prepayment"] = parsed_prepayment
-        st.session_state["balance_due"] = parsed_balance_due
+        st.session_state["order_date"] = ""
+        st.session_state["total_amount"] = 0.0
+        st.session_state["prepayment"] = 0.0
+        st.session_state["balance_due"] = 0.0
         st.session_state["payment_mode"] = "balance"
-        st.session_state["payment_amount"] = overridden_payment_amount
+        st.session_state["payment_amount"] = parsed_payment_amount
         st.session_state["payment_label"] = effective_payment_label
         st.session_state["apply_link_to_pdf"] = apply_link_to_pdf
 
