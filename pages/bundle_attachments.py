@@ -670,36 +670,34 @@ def add_payment_button_to_pdf(doc, payment_url):
         if total_rect is None:
             continue
 
-        right_limit = total_rect.x0 - 10
         left_limit = 18
-
         if gst_rect is not None:
             left_limit = max(left_limit, gst_rect.x1 + 14)
 
+        # Reserve room for a wide total amount like $999,999.00 or 999.999,99
+        reserved_price_width = 88
+        gap_to_total_amount = 14
+        right_limit = total_rect.x0 - reserved_price_width - gap_to_total_amount
+
         available_width = right_limit - left_limit
-        if available_width < 70:
+        if available_width < 72:
             continue
 
-        target_width = min(112, available_width)
-        target_width = max(86, target_width)
+        button_width = min(96, available_width)
+        button_width = max(78, button_width)
 
-        x0 = right_limit - target_width
         x1 = right_limit
-
-        if gst_rect is not None and x0 < gst_rect.x1 + 14:
-            x0 = gst_rect.x1 + 14
-            x1 = x0 + target_width
-
-        if x1 > right_limit:
-            x1 = right_limit
-            x0 = x1 - target_width
+        x0 = x1 - button_width
 
         if x0 < left_limit:
             x0 = left_limit
+            x1 = x0 + button_width
+
+        if x1 > right_limit:
             x1 = right_limit
 
         final_width = x1 - x0
-        if final_width < 70:
+        if final_width < 72:
             continue
 
         y0 = max(total_rect.y0 - 1.5, 18)
