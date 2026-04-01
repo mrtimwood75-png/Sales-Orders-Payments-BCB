@@ -2,6 +2,7 @@ import re
 from pathlib import Path
 
 import streamlit as st
+import requests
 
 try:
     import fitz  # PyMuPDF
@@ -29,6 +30,93 @@ def resolve_logo_path():
 
 
 LOGO_PATH = resolve_logo_path()
+
+
+def get_secret(name, default=""):
+    try:
+        return st.secrets[name]
+    except Exception:
+        return default
+
+
+def normalize_mobile_au(mobile):
+    mobile = str(mobile).strip()
+    allowed = []
+    for ch in mobile:
+        if ch.isdigit() or ch == "+":
+            allowed.append(ch)
+    mobile = "".join(allowed)
+
+    if not mobile:
+        return ""
+
+    if mobile.startswith("+61"):
+        return mobile
+    if mobile.startswith("61"):
+        return "+" + mobile
+    if mobile.startswith("04") and len(mobile) >= 10:
+        return "+61" + mobile[1:]
+
+    return mobile
+
+
+def messagemedia_config():
+    api_key = get_secret("MESSAGEMEDIA_API_KEY")
+    api_secret = get_secret("MESSAGEMEDIA_API_SECRET")
+    sender_id = get_secret("MESSAGEMEDIA_SENDER_ID", "").strip()
+    base_url = get_secret("MESSAGEMEDIA_BASE_URL", "https://api.messagemedia.com").strip().rstrip("/")
+
+    if not api_key or not api_secret:
+        raise ValueError("Missing MESSAGEMEDIA_API_KEY or MESSAGEMEDIA_API_SECRET in Streamlit secrets.")
+
+    return {
+        "api_key": api_key,
+        "api_secret": api_secret,
+        "sender_id": sender_id,
+        "base_url": base_url,
+    }
+
+
+def messagemedia_send_message(to_mobile, message):
+    cfg = messagemedia_config()
+
+    payload = {
+        "messages": [
+            {
+                "content": message,
+                "destination_number": normalize_mobile_au(to_mobile),
+                "format": "SMS",
+            }
+        ]
+    }
+
+    if cfg["sender_id"]:
+        payload["messages"][0]["source_number"] = cfg["sender_id"]
+
+    url = f"{cfg['base_url']}/v1/messages"
+
+    resp = requests.post(
+        url,
+        json=payload,
+        auth=(cfg["api_key"], cfg["api_secret"]),
+        headers={
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        },
+        timeout=30,
+    )
+    resp.raise_for_status()
+
+    body = resp.json()
+    messages = body.get("messages") or []
+    if not messages:
+        raise ValueError(f"Unexpected MessageMedia response: {body}")
+
+    message_id = messages[0].get("message_id") or messages[0].get("messageId")
+    if not message_id:
+        raise ValueError(f"MessageMedia response missing message_id: {body}")
+
+    return str(message_id)
 
 
 def get_default_attachments():
@@ -62,6 +150,9 @@ def reset_session():
         "bundle_only_customer_name",
         "bundle_only_doc_type",
         "bundle_only_order_fields",
+        "bundle_only_payment_request",
+        "bundle_only_sms_text",
+        "bundle_only_sms_status",
     ]
     for key in keys:
         if key in st.session_state:
@@ -72,6 +163,28 @@ def clean_text(value):
     if value is None:
         return ""
     return re.sub(r"\s+", " ", str(value)).strip()
+
+
+def safe_filename(value, fallback="customer"):
+    cleaned = re.sub(r"[^A-Za-z0-9_-]+", "_", (value or "").strip())
+    cleaned = cleaned.strip("_")
+    return cleaned or fallback
+
+
+def format_amount_au(value):
+    try:
+        num = float(str(value).replace(",", ""))
+        return f"${num:,.2f}"
+    except Exception:
+        return str(value or "")
+
+
+def parse_amount_from_text(value):
+    text = clean_text(value)
+    if not text:
+        return ""
+    m = re.search(r"([0-9]{1,3}(?:[.,][0-9]{3})*(?:[.,][0-9]{2})|[0-9]+[.,][0-9]{2})", text)
+    return m.group(1) if m else text
 
 
 def get_page_text_left_margin(page):
@@ -117,6 +230,7 @@ def extract_sales_order_fields(pdf_bytes):
         "customer_address": "",
         "email": "",
         "phone": "",
+        "payment_request": "",
     }
 
     if fitz is None:
@@ -137,7 +251,7 @@ def extract_sales_order_fields(pdf_bytes):
 
         for line in lines[:12]:
             if not re.search(
-                r"sales order|date|phone|email|misc\. charges|gst|total|prepayment|balance due|confirmation|tax invoice",
+                r"sales order|date|phone|email|misc\. charges|gst|total|prepayment|balance due|confirmation|tax invoice|customer number|page",
                 line,
                 re.IGNORECASE,
             ):
@@ -185,30 +299,17 @@ def extract_sales_order_fields(pdf_bytes):
 
         if address_lines:
             fields["customer_address"] = "\n".join(address_lines).strip()
-        else:
-            if fields["customer_name"] and fields["customer_name"] in lines:
-                start_idx = lines.index(fields["customer_name"]) + 1
-                fallback = []
-                for line in lines[start_idx:start_idx + 6]:
-                    if re.search(
-                        r"phone|email|payment|terms of delivery|estimated date|article|qty|description",
-                        line,
-                        re.IGNORECASE,
-                    ):
-                        break
-                    fallback.append(line)
-                fields["customer_address"] = "\n".join(fallback).strip()
 
         balance_source = "\n".join([second_last_text, last_page_text])
 
         total_patterns = [
-            r"(?:order total|total)\s*(?:aud)?\s*([0-9\.,]+)",
-            r"total\s+([0-9\.,]+)",
+            r"order total\s*(?:aud)?\s*([0-9\.,]+)",
+            r"total\s*(?:aud)?\s*([0-9\.,]+)",
         ]
         for pattern in total_patterns:
             m = re.search(pattern, balance_source, re.IGNORECASE)
             if m:
-                fields["order_total"] = clean_text(m.group(1))
+                fields["order_total"] = parse_amount_from_text(m.group(1))
                 break
 
         balance_patterns = [
@@ -218,7 +319,7 @@ def extract_sales_order_fields(pdf_bytes):
         for pattern in balance_patterns:
             m = re.search(pattern, balance_source, re.IGNORECASE)
             if m:
-                fields["order_balance"] = clean_text(m.group(1))
+                fields["order_balance"] = parse_amount_from_text(m.group(1))
                 break
 
     finally:
@@ -227,27 +328,88 @@ def extract_sales_order_fields(pdf_bytes):
     return fields
 
 
+def find_confirmation_span(page):
+    try:
+        text_dict = page.get_text("dict")
+    except Exception:
+        return None
+
+    candidates = []
+
+    for block in text_dict.get("blocks", []):
+        if block.get("type") != 0:
+            continue
+        for line in block.get("lines", []):
+            for span in line.get("spans", []):
+                text = clean_text(span.get("text", ""))
+                if text.lower() == "confirmation":
+                    bbox = span.get("bbox")
+                    if not bbox:
+                        continue
+                    x0, y0, x1, y1 = bbox
+                    candidates.append(
+                        {
+                            "rect": fitz.Rect(x0, y0, x1, y1),
+                            "size": float(span.get("size", 18)),
+                            "font": str(span.get("font", "")),
+                        }
+                    )
+
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda s: (s["rect"].y0, -(s["rect"].width)))
+    return candidates[0]
+
+
+def choose_pymupdf_font(font_name):
+    name = (font_name or "").lower()
+    if "bold" in name:
+        return "helvB"
+    return "helv"
+
+
 def overlay_tax_invoice_title(doc):
     if fitz is None or doc.page_count == 0:
         return
 
     page = doc[0]
+    span = find_confirmation_span(page)
 
-    title_rect = fitz.Rect(300, 118, 485, 160)
+    if span:
+        rect = fitz.Rect(span["rect"].x0 - 3, span["rect"].y0 - 2, span["rect"].x1 + 3, span["rect"].y1 + 2)
+        fontname = choose_pymupdf_font(span.get("font"))
+        font_size = max(12, min(span.get("size", 18), 22))
 
-    page.draw_rect(
-        title_rect,
-        color=None,
-        fill=(1, 1, 1),
-        overlay=True,
-    )
+        page.add_redact_annot(rect, fill=(1, 1, 1))
+        page.apply_redactions()
 
+        test_rect = fitz.Rect(rect.x0, rect.y0, rect.x1 + 70, rect.y1)
+        inserted = 0
+        while font_size >= 10:
+            inserted = page.insert_textbox(
+                test_rect,
+                "Tax Invoice",
+                fontsize=font_size,
+                fontname=fontname,
+                align=0,
+                color=(0, 0, 0),
+                overlay=True,
+            )
+            if inserted >= 0:
+                break
+            font_size -= 0.5
+
+        return
+
+    fallback_rect = fitz.Rect(300, 118, 470, 140)
+    page.draw_rect(fallback_rect, color=None, fill=(1, 1, 1), overlay=True)
     page.insert_textbox(
-        title_rect,
+        fallback_rect,
         "Tax Invoice",
         fontsize=18,
-        fontname="helv",
-        align=1,
+        fontname="helvB",
+        align=0,
         color=(0, 0, 0),
         overlay=True,
     )
@@ -324,16 +486,27 @@ def build_single_bundle_pdf_bytes(main_pdf_bytes, attachments, logo_path, doc_ty
     return output
 
 
-def safe_filename(value, fallback="customer"):
-    cleaned = re.sub(r"[^A-Za-z0-9_-]+", "_", (value or "").strip())
-    cleaned = cleaned.strip("_")
-    return cleaned or fallback
+def build_sms_text(fields, payment_request):
+    customer_name = clean_text(fields.get("customer_name", "Customer"))
+    order_number = clean_text(fields.get("order_number", ""))
+    amount_text = format_amount_au(payment_request) if payment_request else ""
+    if order_number and amount_text:
+        return f"Hi {customer_name}, a payment of {amount_text} is requested for order {order_number}. Please contact us if you have any questions."
+    if amount_text:
+        return f"Hi {customer_name}, a payment of {amount_text} is requested. Please contact us if you have any questions."
+    return f"Hi {customer_name}, please contact us regarding your order."
 
 
 st.set_page_config(page_title=APP_TITLE, layout="wide")
 
 if "bundle_only_doc_type" not in st.session_state:
     st.session_state["bundle_only_doc_type"] = "Confirmation"
+if "bundle_only_payment_request" not in st.session_state:
+    st.session_state["bundle_only_payment_request"] = ""
+if "bundle_only_sms_text" not in st.session_state:
+    st.session_state["bundle_only_sms_text"] = ""
+if "bundle_only_sms_status" not in st.session_state:
+    st.session_state["bundle_only_sms_status"] = ""
 
 top_nav_left, top_nav_right = st.columns([1, 5])
 with top_nav_left:
@@ -376,6 +549,8 @@ if uploaded_pdf is not None:
         fields = extract_sales_order_fields(pdf_bytes)
         st.session_state["bundle_only_order_fields"] = fields
         st.session_state["bundle_only_customer_name"] = fields.get("customer_name", "")
+        st.session_state["bundle_only_payment_request"] = fields.get("order_balance", "")
+        st.session_state["bundle_only_sms_text"] = build_sms_text(fields, fields.get("order_balance", ""))
 
         initialise_default_attachments()
 
@@ -493,13 +668,70 @@ if st.session_state.get("bundle_only_order_pdf_bytes"):
                     st.rerun()
 
     fields = st.session_state.get("bundle_only_order_fields", {})
-    if fields:
-        with st.expander("Captured order fields", expanded=False):
-            st.text_input("Order number", value=fields.get("order_number", ""), disabled=True)
-            st.text_input("Order total", value=fields.get("order_total", ""), disabled=True)
-            st.text_input("Order balance", value=fields.get("order_balance", ""), disabled=True)
-            st.text_input("Email", value=fields.get("email", ""), disabled=True)
-            st.text_input("Phone", value=fields.get("phone", ""), disabled=True)
-            st.text_area("Customer address", value=fields.get("customer_address", ""), disabled=True, height=120)
+
+    st.markdown("### Captured order fields")
+    cf1, cf2 = st.columns(2)
+    with cf1:
+        st.text_input("Order number", value=fields.get("order_number", ""), disabled=True)
+        st.text_input("Order total", value=fields.get("order_total", ""), disabled=True)
+        st.text_input("Email", value=fields.get("email", ""), disabled=True)
+    with cf2:
+        st.text_input("Order balance", value=fields.get("order_balance", ""), disabled=True)
+        st.text_input("Phone", value=fields.get("phone", ""), disabled=True)
+        st.text_input("Payment Request", key="bundle_only_payment_request")
+
+    st.text_area(
+        "Customer address",
+        value=fields.get("customer_address", ""),
+        disabled=True,
+        height=120,
+    )
+
+    st.markdown("### SMS payment request")
+    sms_col1, sms_col2 = st.columns([2, 1])
+
+    with sms_col1:
+        if st.button("Build SMS from payment request", use_container_width=True):
+            st.session_state["bundle_only_sms_text"] = build_sms_text(
+                fields,
+                st.session_state.get("bundle_only_payment_request", ""),
+            )
+            st.rerun()
+
+        st.text_area(
+            "SMS message",
+            key="bundle_only_sms_text",
+            height=140,
+        )
+
+    with sms_col2:
+        st.text_input(
+            "SMS mobile",
+            value=normalize_mobile_au(fields.get("phone", "")),
+            disabled=True,
+        )
+
+        if st.button("Send SMS", use_container_width=True):
+            try:
+                mobile = normalize_mobile_au(fields.get("phone", ""))
+                message = clean_text(st.session_state.get("bundle_only_sms_text", ""))
+
+                if not mobile:
+                    raise ValueError("No mobile number found.")
+                if not message:
+                    raise ValueError("SMS message is blank.")
+
+                message_id = messagemedia_send_message(mobile, message)
+                st.session_state["bundle_only_sms_status"] = f"Sent ({message_id})"
+                st.success(f"SMS sent: {message_id}")
+            except Exception as e:
+                st.session_state["bundle_only_sms_status"] = f"Failed ({e})"
+                st.error(f"SMS failed: {e}")
+
+        st.text_input(
+            "SMS status",
+            value=st.session_state.get("bundle_only_sms_status", ""),
+            disabled=True,
+        )
 else:
     st.info("Upload a sales order PDF to begin.")
