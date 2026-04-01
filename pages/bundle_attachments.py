@@ -1,568 +1,333 @@
-import React, { useMemo, useRef, useState } from "react";
-import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
-import { Download, FileText, Receipt, Upload, Trash2, GripVertical, Image as ImageIcon } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
-import { cn } from "@/lib/utils";
-
-type DocumentType = "confirmation" | "invoice";
-
-type UploadedFile = {
-  id: string;
-  file: File;
-  name: string;
-  size: number;
-};
-
-function formatBytes(bytes: number) {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-function sanitizeFilename(value: string) {
-  return value
-    .trim()
-    .replace(/\s+/g, "-")
-    .replace(/[^a-zA-Z0-9-_]/g, "")
-    .replace(/-+/g, "-")
-    .toLowerCase();
-}
-
-async function fileToArrayBuffer(file: File) {
-  return await file.arrayBuffer();
-}
-
-async function readImageDimensions(file: File): Promise<{ width: number; height: number; dataUrl: string }> {
-  const dataUrl = await new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result));
-    reader.onerror = reject;
-    reader.readAsDataURL(file);
-  });
-
-  const dims = await new Promise<{ width: number; height: number }>((resolve, reject) => {
-    const img = new window.Image();
-    img.onload = () => resolve({ width: img.width, height: img.height });
-    img.onerror = reject;
-    img.src = dataUrl;
-  });
-
-  return { ...dims, dataUrl };
-}
-
-function downloadBlob(blob: Blob, filename: string) {
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 2000);
-}
-
-function moveItem<T>(items: T[], fromIndex: number, toIndex: number) {
-  const copy = [...items];
-  const [moved] = copy.splice(fromIndex, 1);
-  copy.splice(toIndex, 0, moved);
-  return copy;
-}
-
-function DocumentTypeSegmentedControl({
-  value,
-  onChange,
-}: {
-  value: DocumentType;
-  onChange: (value: DocumentType) => void;
-}) {
-  const options = [
-    {
-      value: "confirmation" as const,
-      label: "Confirmation",
-      icon: <FileText className="h-4 w-4" />,
-    },
-    {
-      value: "invoice" as const,
-      label: "Invoice",
-      icon: <Receipt className="h-4 w-4" />,
-    },
-  ];
-
-  return (
-    <div className="space-y-2">
-      <div className="text-sm font-medium text-slate-700">Document type</div>
-      <div className="inline-flex rounded-2xl border border-slate-200 bg-slate-100 p-1 shadow-sm" role="tablist" aria-label="Document type">
-        {options.map((option) => {
-          const active = value === option.value;
-          return (
-            <button
-              key={option.value}
-              type="button"
-              role="tab"
-              aria-selected={active}
-              onClick={() => onChange(option.value)}
-              className={cn(
-                "flex min-w-[170px] items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold transition-all duration-150 focus:outline-none focus:ring-2 focus:ring-slate-400 focus:ring-offset-2",
-                active ? "bg-white text-slate-900 shadow" : "text-slate-500 hover:text-slate-700"
-              )}
-            >
-              {option.icon}
-              <span>{option.label}</span>
-            </button>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-async function buildCoverPdf({
-  documentType,
-  customerName,
-  logoFile,
-}: {
-  documentType: DocumentType;
-  customerName: string;
-  logoFile?: File | null;
-}) {
-  const pdf = await PDFDocument.create();
-  const page = pdf.addPage([595.28, 841.89]);
-  const { width, height } = page.getSize();
-
-  const fontRegular = await pdf.embedFont(StandardFonts.Helvetica);
-  const fontBold = await pdf.embedFont(StandardFonts.HelveticaBold);
-
-  page.drawRectangle({ x: 0, y: 0, width, height, color: rgb(1, 1, 1) });
-
-  if (logoFile) {
-    const ext = logoFile.type.toLowerCase();
-    const imageBytes = await fileToArrayBuffer(logoFile);
-    let embeddedImage;
-
-    if (ext.includes("png")) embeddedImage = await pdf.embedPng(imageBytes);
-    else if (ext.includes("jpg") || ext.includes("jpeg")) embeddedImage = await pdf.embedJpg(imageBytes);
-
-    if (embeddedImage) {
-      const scaled = embeddedImage.scale(1);
-      const maxWidth = 180;
-      const scale = Math.min(maxWidth / scaled.width, 80 / scaled.height, 1);
-      const drawWidth = scaled.width * scale;
-      const drawHeight = scaled.height * scale;
-      page.drawImage(embeddedImage, {
-        x: 56,
-        y: height - 72 - drawHeight,
-        width: drawWidth,
-        height: drawHeight,
-      });
-    }
-  }
-
-  page.drawText(documentType === "invoice" ? "Invoice" : "Confirmation", {
-    x: 56,
-    y: height - 190,
-    size: 28,
-    font: fontBold,
-    color: rgb(0.07, 0.09, 0.15),
-  });
-
-  page.drawText(customerName || "Customer", {
-    x: 56,
-    y: height - 230,
-    size: 16,
-    font: fontRegular,
-    color: rgb(0.27, 0.31, 0.36),
-  });
-
-  page.drawLine({
-    start: { x: 56, y: height - 252 },
-    end: { x: width - 56, y: height - 252 },
-    thickness: 1,
-    color: rgb(0.86, 0.88, 0.9),
-  });
-
-  page.drawText("Combined file bundle", {
-    x: 56,
-    y: height - 290,
-    size: 13,
-    font: fontBold,
-    color: rgb(0.07, 0.09, 0.15),
-  });
-
-  page.drawText(`Generated: ${new Date().toLocaleDateString("en-AU")}`, {
-    x: 56,
-    y: height - 315,
-    size: 11,
-    font: fontRegular,
-    color: rgb(0.42, 0.46, 0.5),
-  });
-
-  const bytes = await pdf.save();
-  return bytes;
-}
-
-async function imageFileToSinglePagePdfBytes(file: File) {
-  const pdf = await PDFDocument.create();
-  const page = pdf.addPage([595.28, 841.89]);
-  const { width, height } = page.getSize();
-
-  const imageBytes = await fileToArrayBuffer(file);
-  let image;
-  if (file.type.includes("png")) image = await pdf.embedPng(imageBytes);
-  else image = await pdf.embedJpg(imageBytes);
-
-  const scaled = image.scale(1);
-  const ratio = Math.min((width - 64) / scaled.width, (height - 64) / scaled.height);
-  const drawWidth = scaled.width * ratio;
-  const drawHeight = scaled.height * ratio;
-
-  page.drawImage(image, {
-    x: (width - drawWidth) / 2,
-    y: (height - drawHeight) / 2,
-    width: drawWidth,
-    height: drawHeight,
-  });
-
-  return await pdf.save();
-}
-
-async function combineFilesIntoPdf({
-  files,
-  documentType,
-  customerName,
-  logoFile,
-}: {
-  files: UploadedFile[];
-  documentType: DocumentType;
-  customerName: string;
-  logoFile?: File | null;
-}) {
-  const mergedPdf = await PDFDocument.create();
-
-  const coverBytes = await buildCoverPdf({ documentType, customerName, logoFile });
-  const coverPdf = await PDFDocument.load(coverBytes);
-  const coverPages = await mergedPdf.copyPages(coverPdf, coverPdf.getPageIndices());
-  coverPages.forEach((page) => mergedPdf.addPage(page));
-
-  for (const item of files) {
-    const lower = item.file.name.toLowerCase();
-    if (item.file.type === "application/pdf" || lower.endsWith(".pdf")) {
-      const bytes = await fileToArrayBuffer(item.file);
-      const srcPdf = await PDFDocument.load(bytes);
-      const pages = await mergedPdf.copyPages(srcPdf, srcPdf.getPageIndices());
-      pages.forEach((page) => mergedPdf.addPage(page));
-    } else if (
-      item.file.type.startsWith("image/") ||
-      lower.endsWith(".png") ||
-      lower.endsWith(".jpg") ||
-      lower.endsWith(".jpeg")
-    ) {
-      const imagePdfBytes = await imageFileToSinglePagePdfBytes(item.file);
-      const srcPdf = await PDFDocument.load(imagePdfBytes);
-      const pages = await mergedPdf.copyPages(srcPdf, srcPdf.getPageIndices());
-      pages.forEach((page) => mergedPdf.addPage(page));
-    }
-  }
-
-  const mergedBytes = await mergedPdf.save();
-  return new Blob([mergedBytes], { type: "application/pdf" });
-}
-
-export default function LogoAndBundleApp() {
-  const [documentType, setDocumentType] = useState<DocumentType>("confirmation");
-  const [customerName, setCustomerName] = useState("");
-  const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
-  const [logoFile, setLogoFile] = useState<File | null>(null);
-  const [isDraggingOver, setIsDraggingOver] = useState(false);
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const logoInputRef = useRef<HTMLInputElement | null>(null);
-
-  const outputFilename = useMemo(() => {
-    const name = sanitizeFilename(customerName || "customer");
-    return `${name}-${documentType}.pdf`;
-  }, [customerName, documentType]);
-
-  const previewTitle = documentType === "invoice" ? "Invoice" : "Confirmation";
-
-  const addFiles = (fileList: FileList | null) => {
-    if (!fileList) return;
-
-    const validFiles = Array.from(fileList).filter((file) => {
-      const lower = file.name.toLowerCase();
-      return (
-        file.type === "application/pdf" ||
-        file.type.startsWith("image/") ||
-        lower.endsWith(".pdf") ||
-        lower.endsWith(".png") ||
-        lower.endsWith(".jpg") ||
-        lower.endsWith(".jpeg")
-      );
-    });
-
-    const mapped = validFiles.map((file, index) => ({
-      id: `${file.name}-${file.size}-${Date.now()}-${index}`,
-      file,
-      name: file.name,
-      size: file.size,
-    }));
-
-    setUploadedFiles((prev) => [...prev, ...mapped]);
-  };
-
-  const removeFile = (id: string) => {
-    setUploadedFiles((prev) => prev.filter((item) => item.id !== id));
-  };
-
-  const onDragStartRow = (index: number) => setDraggedIndex(index);
-  const onDropRow = (index: number) => {
-    if (draggedIndex === null || draggedIndex === index) return;
-    setUploadedFiles((prev) => moveItem(prev, draggedIndex, index));
-    setDraggedIndex(null);
-  };
-
-  const handleCombineAndDownload = async () => {
-    if (uploadedFiles.length === 0) return;
-
-    try {
-      setIsProcessing(true);
-      setError(null);
-
-      const blob = await combineFilesIntoPdf({
-        files: uploadedFiles,
-        documentType,
-        customerName,
-        logoFile,
-      });
-
-      downloadBlob(blob, outputFilename);
-    } catch (err) {
-      console.error(err);
-      setError("Failed to combine and download the PDF.");
-    } finally {
-      setIsProcessing(false);
-    }
-  };
-
-  return (
-    <div className="min-h-screen bg-slate-50 p-6">
-      <div className="mx-auto grid max-w-7xl gap-6 lg:grid-cols-[1.05fr_0.95fr]">
-        <Card className="rounded-3xl border-slate-200 shadow-sm">
-          <CardContent className="grid gap-6 p-6">
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <h1 className="text-2xl font-bold tracking-tight text-slate-900">Logo and bundle PDF app</h1>
-                <p className="mt-1 text-sm text-slate-500">Upload a logo, choose document type, combine files, and download one PDF.</p>
-              </div>
-              <Button
-                type="button"
-                variant="outline"
-                className="rounded-2xl"
-                onClick={() => {
-                  setUploadedFiles([]);
-                  setLogoFile(null);
-                  setCustomerName("");
-                  setDocumentType("confirmation");
-                  setError(null);
-                }}
-              >
-                Reset
-              </Button>
-            </div>
-
-            <div className="grid gap-5 xl:grid-cols-2">
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-slate-700">Customer name</label>
-                <input
-                  value={customerName}
-                  onChange={(e) => setCustomerName(e.target.value)}
-                  placeholder="Enter customer name"
-                  className="h-12 w-full rounded-2xl border border-slate-200 bg-white px-4 text-sm text-slate-900 outline-none transition focus:border-slate-300 focus:ring-2 focus:ring-slate-200"
-                />
-              </div>
-
-              <DocumentTypeSegmentedControl value={documentType} onChange={setDocumentType} />
-            </div>
-
-            <div className="grid gap-5 xl:grid-cols-2">
-              <div className="space-y-2">
-                <div className="text-sm font-medium text-slate-700">Logo</div>
-                <input
-                  ref={logoInputRef}
-                  type="file"
-                  accept="image/png,image/jpeg,image/jpg"
-                  className="hidden"
-                  onChange={(e) => setLogoFile(e.target.files?.[0] || null)}
-                />
-                <button
-                  type="button"
-                  onClick={() => logoInputRef.current?.click()}
-                  className="flex h-28 w-full items-center justify-center gap-3 rounded-2xl border border-dashed border-slate-300 bg-white px-4 text-sm text-slate-600 transition hover:border-slate-400 hover:text-slate-800"
-                >
-                  <ImageIcon className="h-5 w-5" />
-                  {logoFile ? `${logoFile.name} (${formatBytes(logoFile.size)})` : "Upload logo"}
-                </button>
-              </div>
-
-              <div className="space-y-2">
-                <div className="text-sm font-medium text-slate-700">Files to bundle</div>
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept="application/pdf,image/png,image/jpeg"
-                  multiple
-                  className="hidden"
-                  onChange={(e) => addFiles(e.target.files)}
-                />
-                <button
-                  type="button"
-                  onClick={() => fileInputRef.current?.click()}
-                  onDragOver={(e) => {
-                    e.preventDefault();
-                    setIsDraggingOver(true);
-                  }}
-                  onDragLeave={() => setIsDraggingOver(false)}
-                  onDrop={(e) => {
-                    e.preventDefault();
-                    setIsDraggingOver(false);
-                    addFiles(e.dataTransfer.files);
-                  }}
-                  className={cn(
-                    "flex h-28 w-full items-center justify-center gap-3 rounded-2xl border border-dashed bg-white px-4 text-sm transition",
-                    isDraggingOver
-                      ? "border-slate-500 text-slate-900"
-                      : "border-slate-300 text-slate-600 hover:border-slate-400 hover:text-slate-800"
-                  )}
-                >
-                  <Upload className="h-5 w-5" />
-                  Upload or drop PDF / image files
-                </button>
-              </div>
-            </div>
-
-            <div className="space-y-3">
-              <div className="flex items-center justify-between">
-                <div className="text-sm font-medium text-slate-700">Bundle order</div>
-                <div className="text-xs text-slate-500">Drag rows to reorder</div>
-              </div>
-
-              <div className="grid gap-2">
-                {uploadedFiles.length === 0 ? (
-                  <div className="rounded-2xl border border-slate-200 bg-white px-4 py-5 text-sm text-slate-500">
-                    No files added yet.
-                  </div>
-                ) : (
-                  uploadedFiles.map((item, index) => (
-                    <div
-                      key={item.id}
-                      draggable
-                      onDragStart={() => onDragStartRow(index)}
-                      onDragOver={(e) => e.preventDefault()}
-                      onDrop={() => onDropRow(index)}
-                      className="flex items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-sm"
-                    >
-                      <div className="flex min-w-0 items-center gap-3">
-                        <GripVertical className="h-4 w-4 shrink-0 text-slate-400" />
-                        <div className="min-w-0">
-                          <div className="truncate text-sm font-medium text-slate-900">{item.name}</div>
-                          <div className="text-xs text-slate-500">{formatBytes(item.size)}</div>
-                        </div>
-                      </div>
-
-                      <Button type="button" variant="ghost" size="icon" className="rounded-xl" onClick={() => removeFile(item.id)}>
-                        <Trash2 className="h-4 w-4" />
-                      </Button>
-                    </div>
-                  ))
-                )}
-              </div>
-            </div>
-
-            {error ? (
-              <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>
-            ) : null}
-
-            <div className="flex flex-wrap items-center gap-3">
-              <Button
-                type="button"
-                size="lg"
-                disabled={uploadedFiles.length === 0 || isProcessing}
-                onClick={handleCombineAndDownload}
-                className="h-12 rounded-2xl px-6 text-base font-semibold"
-              >
-                <Download className="mr-2 h-4 w-4" />
-                {isProcessing ? "Combining PDF..." : `Combine & download PDF${uploadedFiles.length ? ` (${uploadedFiles.length} files)` : ""}`}
-              </Button>
-
-              <div className="text-sm text-slate-500">Output: {outputFilename}</div>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card className="rounded-3xl border-slate-200 shadow-sm">
-          <CardContent className="p-6">
-            <div className="rounded-[28px] border border-slate-200 bg-white p-8 shadow-sm">
-              <div className="flex min-h-[760px] flex-col">
-                <div className="flex items-start justify-between gap-4 border-b border-slate-200 pb-6">
-                  <div>
-                    <div className="text-xs font-medium uppercase tracking-[0.18em] text-slate-400">Preview</div>
-                    <div className="mt-3 text-4xl font-bold tracking-tight text-slate-900">{previewTitle}</div>
-                    <div className="mt-2 text-base text-slate-500">{customerName || "Customer name"}</div>
-                  </div>
-
-                  <div className="rounded-2xl border border-slate-200 px-4 py-2 text-sm text-slate-500">
-                    {uploadedFiles.length} bundled {uploadedFiles.length === 1 ? "file" : "files"}
-                  </div>
-                </div>
-
-                <div className="mt-8 grid gap-4">
-                  <div className="rounded-2xl bg-slate-50 p-5">
-                    <div className="text-sm font-medium text-slate-700">Document type</div>
-                    <div className="mt-2 text-lg font-semibold text-slate-900">{previewTitle}</div>
-                  </div>
-
-                  <div className="rounded-2xl bg-slate-50 p-5">
-                    <div className="text-sm font-medium text-slate-700">Included files</div>
-                    <div className="mt-3 grid gap-2">
-                      {uploadedFiles.length === 0 ? (
-                        <div className="text-sm text-slate-500">Your bundled files will appear here.</div>
-                      ) : (
-                        uploadedFiles.map((item, index) => (
-                          <div key={item.id} className="flex items-center justify-between rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm">
-                            <span className="truncate pr-3 text-slate-800">{index + 1}. {item.name}</span>
-                            <span className="shrink-0 text-slate-500">{formatBytes(item.size)}</span>
-                          </div>
-                        ))
-                      )}
-                    </div>
-                  </div>
-
-                  <div className="rounded-2xl bg-slate-50 p-5">
-                    <div className="text-sm font-medium text-slate-700">Logo</div>
-                    <div className="mt-2 text-sm text-slate-500">{logoFile ? logoFile.name : "No logo uploaded"}</div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-    </div>
-  );
-}
-
-/*
-INSTALL
-npm install pdf-lib lucide-react
-
-NOTES
-- This is a complete front-end React file.
-- It combines uploaded PDF files and image files into one PDF.
-- It inserts a generated first page using the selected document type.
-- The segmented control toggles Confirmation / Invoice.
-- The main button combines and immediately downloads the PDF.
-- Replace the preview styling or generated cover page layout if you want it to match your existing app exactly.
-*/
+import io
+import os
+from pathlib import Path
+from typing import List, Tuple
+
+import streamlit as st
+from PIL import Image
+from pypdf import PdfReader, PdfWriter
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.utils import ImageReader
+from reportlab.pdfgen import canvas
+
+
+st.set_page_config(page_title="Logo and Bundle PDF App", layout="wide")
+
+
+APP_TITLE = "Logo and Bundle PDF App"
+DEFAULT_TERMS_FILENAMES = [
+    "Terms & Conditions.pdf",
+    "Terms and Conditions.pdf",
+    "terms_and_conditions.pdf",
+]
+
+
+def format_size(num_bytes: int) -> str:
+    if num_bytes < 1024:
+        return f"{num_bytes} B"
+    if num_bytes < 1024 * 1024:
+        return f"{num_bytes / 1024:.1f} KB"
+    return f"{num_bytes / (1024 * 1024):.1f} MB"
+
+
+def safe_filename(value: str) -> str:
+    value = (value or "customer").strip().lower()
+    cleaned = []
+    for ch in value:
+        if ch.isalnum():
+            cleaned.append(ch)
+        elif ch in (" ", "-", "_"):
+            cleaned.append("-")
+    out = "".join(cleaned)
+    while "--" in out:
+        out = out.replace("--", "-")
+    return out.strip("-") or "customer"
+
+
+def find_default_terms_file() -> Path | None:
+    here = Path(".")
+    for name in DEFAULT_TERMS_FILENAMES:
+        p = here / name
+        if p.exists() and p.is_file():
+            return p
+    return None
+
+
+def create_cover_page_pdf(doc_type: str, customer_name: str, logo_bytes: bytes | None) -> bytes:
+    buffer = io.BytesIO()
+    c = canvas.Canvas(buffer, pagesize=A4)
+    width, height = A4
+
+    c.setFillColorRGB(1, 1, 1)
+    c.rect(0, 0, width, height, fill=1, stroke=0)
+
+    if logo_bytes:
+        try:
+            img = Image.open(io.BytesIO(logo_bytes))
+            img_width, img_height = img.size
+            max_width = 180
+            max_height = 80
+            scale = min(max_width / img_width, max_height / img_height, 1)
+            draw_w = img_width * scale
+            draw_h = img_height * scale
+            c.drawImage(
+                ImageReader(img),
+                56,
+                height - 72 - draw_h,
+                width=draw_w,
+                height=draw_h,
+                mask="auto",
+            )
+        except Exception:
+            pass
+
+    c.setFont("Helvetica-Bold", 28)
+    c.setFillColorRGB(0.07, 0.09, 0.15)
+    c.drawString(56, height - 190, doc_type)
+
+    c.setFont("Helvetica", 16)
+    c.setFillColorRGB(0.27, 0.31, 0.36)
+    c.drawString(56, height - 230, customer_name or "Customer")
+
+    c.setStrokeColorRGB(0.86, 0.88, 0.90)
+    c.setLineWidth(1)
+    c.line(56, height - 252, width - 56, height - 252)
+
+    c.setFont("Helvetica-Bold", 13)
+    c.setFillColorRGB(0.07, 0.09, 0.15)
+    c.drawString(56, height - 290, "Combined file bundle")
+
+    c.setFont("Helvetica", 11)
+    c.setFillColorRGB(0.42, 0.46, 0.50)
+    c.drawString(56, height - 315, "Generated from Streamlit app")
+
+    c.showPage()
+    c.save()
+    buffer.seek(0)
+    return buffer.read()
+
+
+def image_to_pdf_bytes(image_bytes: bytes) -> bytes:
+    img = Image.open(io.BytesIO(image_bytes))
+    if img.mode in ("RGBA", "P"):
+        img = img.convert("RGB")
+
+    page_w, page_h = A4
+    margin = 32
+    max_w = page_w - margin * 2
+    max_h = page_h - margin * 2
+
+    img_w, img_h = img.size
+    scale = min(max_w / img_w, max_h / img_h)
+    draw_w = img_w * scale
+    draw_h = img_h * scale
+    x = (page_w - draw_w) / 2
+    y = (page_h - draw_h) / 2
+
+    buffer = io.BytesIO()
+    c = canvas.Canvas(buffer, pagesize=A4)
+    c.setFillColorRGB(1, 1, 1)
+    c.rect(0, 0, page_w, page_h, fill=1, stroke=0)
+    c.drawImage(ImageReader(img), x, y, width=draw_w, height=draw_h, mask="auto")
+    c.showPage()
+    c.save()
+    buffer.seek(0)
+    return buffer.read()
+
+
+def append_pdf_bytes(writer: PdfWriter, pdf_bytes: bytes) -> None:
+    reader = PdfReader(io.BytesIO(pdf_bytes))
+    for page in reader.pages:
+        writer.add_page(page)
+
+
+def combine_bundle(
+    doc_type: str,
+    customer_name: str,
+    logo_bytes: bytes | None,
+    ordered_items: List[Tuple[str, bytes, str]],
+) -> bytes:
+    writer = PdfWriter()
+
+    cover_pdf = create_cover_page_pdf(doc_type, customer_name, logo_bytes)
+    append_pdf_bytes(writer, cover_pdf)
+
+    for _, file_bytes, file_type in ordered_items:
+        if file_type == "pdf":
+            append_pdf_bytes(writer, file_bytes)
+        elif file_type == "image":
+            image_pdf = image_to_pdf_bytes(file_bytes)
+            append_pdf_bytes(writer, image_pdf)
+
+    out = io.BytesIO()
+    writer.write(out)
+    out.seek(0)
+    return out.read()
+
+
+def init_state():
+    if "bundle_items" not in st.session_state:
+        st.session_state.bundle_items = []
+    if "doc_type" not in st.session_state:
+        st.session_state.doc_type = "Confirmation"
+
+
+def add_uploaded_file(name: str, data: bytes, kind: str):
+    existing_keys = {item["key"] for item in st.session_state.bundle_items}
+    key = f"{name}-{len(data)}-{kind}"
+    if key in existing_keys:
+        return
+    st.session_state.bundle_items.append(
+        {
+            "key": key,
+            "name": name,
+            "bytes": data,
+            "type": kind,
+            "size": len(data),
+        }
+    )
+
+
+def move_item_up(idx: int):
+    if idx <= 0:
+        return
+    items = st.session_state.bundle_items
+    items[idx - 1], items[idx] = items[idx], items[idx - 1]
+
+
+def move_item_down(idx: int):
+    items = st.session_state.bundle_items
+    if idx >= len(items) - 1:
+        return
+    items[idx + 1], items[idx] = items[idx], items[idx + 1]
+
+
+def remove_item(idx: int):
+    st.session_state.bundle_items.pop(idx)
+
+
+init_state()
+
+st.title(APP_TITLE)
+
+left, right = st.columns([1.1, 0.9], gap="large")
+
+with left:
+    customer_name = st.text_input("Customer", placeholder="Enter customer name")
+
+    st.session_state.doc_type = st.segmented_control(
+        "Document type",
+        options=["Confirmation", "Invoice"],
+        default=st.session_state.doc_type,
+        selection_mode="single",
+    ) or "Confirmation"
+
+    sales_order_pdf = st.file_uploader(
+        "Upload sales order PDF",
+        type=["pdf"],
+        accept_multiple_files=False,
+        key="sales_order_pdf",
+    )
+
+    extra_files = st.file_uploader(
+        "Upload extra PDF or image files",
+        type=["pdf", "png", "jpg", "jpeg"],
+        accept_multiple_files=True,
+        key="extra_files",
+    )
+
+    logo_file = st.file_uploader(
+        "Upload logo",
+        type=["png", "jpg", "jpeg"],
+        accept_multiple_files=False,
+        key="logo_file",
+    )
+
+    if st.button("Add files to bundle", use_container_width=True):
+        if sales_order_pdf is not None:
+            add_uploaded_file(sales_order_pdf.name, sales_order_pdf.getvalue(), "pdf")
+
+        if extra_files:
+            for f in extra_files:
+                ext = f.name.lower().split(".")[-1]
+                kind = "pdf" if ext == "pdf" else "image"
+                add_uploaded_file(f.name, f.getvalue(), kind)
+
+        default_terms = find_default_terms_file()
+        if default_terms is not None:
+            already_present = any(
+                item["name"] == default_terms.name for item in st.session_state.bundle_items
+            )
+            if not already_present:
+                add_uploaded_file(default_terms.name, default_terms.read_bytes(), "pdf")
+
+        st.success("Files added to bundle.")
+
+    st.subheader("Bundle order")
+
+    if not st.session_state.bundle_items:
+        st.info("No files added yet.")
+    else:
+        for idx, item in enumerate(st.session_state.bundle_items):
+            row = st.columns([0.08, 0.58, 0.12, 0.11, 0.11])
+            row[0].write(f"{idx + 1}.")
+            row[1].write(f"**{item['name']}**  \n{format_size(item['size'])}")
+            if row[2].button("↑", key=f"up_{item['key']}", use_container_width=True):
+                move_item_up(idx)
+                st.rerun()
+            if row[3].button("↓", key=f"down_{item['key']}", use_container_width=True):
+                move_item_down(idx)
+                st.rerun()
+            if row[4].button("✕", key=f"del_{item['key']}", use_container_width=True):
+                remove_item(idx)
+                st.rerun()
+
+    col_a, col_b = st.columns(2)
+    if col_a.button("Reset bundle", use_container_width=True):
+        st.session_state.bundle_items = []
+        st.rerun()
+
+    doc_type = st.session_state.doc_type
+    output_name = f"{safe_filename(customer_name)}-{doc_type.lower()}.pdf"
+
+    if st.session_state.bundle_items:
+        combined_pdf_bytes = combine_bundle(
+            doc_type=doc_type,
+            customer_name=customer_name,
+            logo_bytes=logo_file.getvalue() if logo_file else None,
+            ordered_items=[
+                (item["name"], item["bytes"], item["type"])
+                for item in st.session_state.bundle_items
+            ],
+        )
+
+        col_b.download_button(
+            "Combine & download PDF",
+            data=combined_pdf_bytes,
+            file_name=output_name,
+            mime="application/pdf",
+            use_container_width=True,
+        )
+
+with right:
+    st.subheader("Preview")
+    st.markdown(f"## {st.session_state.doc_type}")
+    st.write(customer_name or "Customer name")
+    st.caption(f"{len(st.session_state.bundle_items)} bundled file(s)")
+
+    st.markdown("### Included files")
+    if not st.session_state.bundle_items:
+        st.write("Your bundled files will appear here.")
+    else:
+        for idx, item in enumerate(st.session_state.bundle_items, start=1):
+            st.write(f"{idx}. {item['name']} — {format_size(item['size'])}")
+
+    st.markdown("### Logo")
+    if logo_file:
+        st.write(logo_file.name)
+        try:
+            st.image(logo_file.getvalue(), width=220)
+        except Exception:
+            pass
+    else:
+        st.write("No logo uploaded")
