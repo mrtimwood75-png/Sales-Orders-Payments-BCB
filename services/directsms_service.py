@@ -7,7 +7,15 @@ from config.settings import MESSAGEMEDIA_API_KEY, MESSAGEMEDIA_API_SECRET, MESSA
 
 
 class DirectSMSService:
-    endpoint = f"{MESSAGEMEDIA_BASE_URL.rstrip('/')}/messages"
+    
+    @staticmethod
+    def _endpoint() -> str:
+        base = (MESSAGEMEDIA_BASE_URL or 'https://api.messagemedia.com/v1').strip().rstrip('/')
+        if base.endswith('/v1'):
+            return f'{base}/messages'
+        if base.endswith('/messages'):
+            return base
+        return f'{base}/v1/messages'
 
     def enabled(self) -> bool:
         return bool(MESSAGEMEDIA_API_KEY and MESSAGEMEDIA_API_SECRET)
