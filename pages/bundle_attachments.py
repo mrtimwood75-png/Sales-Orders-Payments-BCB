@@ -601,121 +601,112 @@ def draw_gradient_button(page, rect, text):
     )
 
 
-def find_total_band(page):
-    page_h = page.rect.height
-    candidates_total = []
-    candidates_gst = []
-
-    for label in ["Total", "total"]:
+def search_rects(page, labels):
+    results = []
+    for label in labels:
         try:
-            for r in page.search_for(label):
-                if r.y0 > page_h * 0.35:
-                    candidates_total.append(r)
+            rects = page.search_for(label)
         except Exception:
-            pass
+            rects = []
+        results.extend(rects)
+    return rects if False else results
 
-    for label in ["GST", "gst"]:
-        try:
-            for r in page.search_for(label):
-                if r.y0 > page_h * 0.35:
-                    candidates_gst.append(r)
-        except Exception:
-            pass
 
-    if not candidates_total:
-        return None, None
+def find_payment_summary_page(doc):
+    best = None
 
-    best_pair = None
-    best_score = None
+    for page_index in range(doc.page_count):
+        page = doc[page_index]
+        h = page.rect.height
 
-    for total_rect in candidates_total:
-        nearby_gst = None
-        nearby_dist = None
-        for gst_rect in candidates_gst:
-            dy = abs(gst_rect.y0 - total_rect.y0)
-            if dy <= 22:
-                dx = abs(gst_rect.x0 - total_rect.x0)
-                score = dy * 10 + dx
-                if nearby_dist is None or score < nearby_dist:
-                    nearby_dist = score
-                    nearby_gst = gst_rect
+        total_rects = [r for r in search_rects(page, ["Total", "total"]) if r.y0 > h * 0.35]
+        gst_rects = [r for r in search_rects(page, ["GST", "gst"]) if r.y0 > h * 0.35]
+        balance_rects = [r for r in search_rects(page, ["Balance due", "balance due"]) if r.y0 > h * 0.40]
+        prepay_rects = [r for r in search_rects(page, ["Prepayment", "prepayment"]) if r.y0 > h * 0.40]
 
-        if nearby_gst is not None:
-            pair_score = total_rect.y0 * 1000 + nearby_dist
-            if best_score is None or pair_score > best_score:
-                best_score = pair_score
-                best_pair = (nearby_gst, total_rect)
+        if not total_rects:
+            continue
 
-    if best_pair:
-        return best_pair
+        score = 0
+        score += 100 if gst_rects else 0
+        score += 200 if balance_rects else 0
+        score += 120 if prepay_rects else 0
+        score += int(max(r.y0 for r in total_rects))
 
-    total_rect = sorted(candidates_total, key=lambda r: (r.y0, r.x0))[-1]
+        if best is None or score > best["score"]:
+            best = {
+                "page_index": page_index,
+                "score": score,
+                "total_rects": total_rects,
+                "gst_rects": gst_rects,
+                "balance_rects": balance_rects,
+                "prepay_rects": prepay_rects,
+            }
+
+    return best
+
+
+def choose_total_and_gst_rect(page_info):
+    total_rect = sorted(page_info["total_rects"], key=lambda r: (r.y0, r.x0))[-1]
     gst_rect = None
-    if candidates_gst:
-        gst_rect = min(candidates_gst, key=lambda r: abs(r.y0 - total_rect.y0) + abs(r.x0 - total_rect.x0))
-    return gst_rect, total_rect
+
+    if page_info["gst_rects"]:
+        same_band = [r for r in page_info["gst_rects"] if abs(r.y0 - total_rect.y0) <= 24]
+        if same_band:
+            gst_rect = sorted(same_band, key=lambda r: (abs(r.y0 - total_rect.y0), r.x0))[0]
+        else:
+            gst_rect = sorted(page_info["gst_rects"], key=lambda r: (abs(r.y0 - total_rect.y0), r.x0))[0]
+
+    return total_rect, gst_rect
 
 
 def add_payment_button_to_pdf(doc, payment_url):
     if fitz is None or not payment_url or doc.page_count == 0:
         return
 
-    target_pages = [doc.page_count - 1]
-    if doc.page_count > 1:
-        target_pages.insert(0, doc.page_count - 2)
-
-    for page_index in target_pages:
-        page = doc[page_index]
-        gst_rect, total_rect = find_total_band(page)
-        if total_rect is None:
-            continue
+    page_info = find_payment_summary_page(doc)
+    if page_info is not None:
+        page = doc[page_info["page_index"]]
+        total_rect, gst_rect = choose_total_and_gst_rect(page_info)
 
         left_limit = 18
         if gst_rect is not None:
             left_limit = max(left_limit, gst_rect.x1 + 14)
 
-        # Reserve room for a wide total amount like $999,999.00 or 999.999,99
-        reserved_price_width = 88
-        gap_to_total_amount = 14
-        right_limit = total_rect.x0 - reserved_price_width - gap_to_total_amount
+        # Reserve enough room for long totals so the button never covers the amount.
+        reserved_total_amount_width = 108
+        gap_before_total_amount = 12
+        right_limit = total_rect.x0 - reserved_total_amount_width - gap_before_total_amount
 
         available_width = right_limit - left_limit
-        if available_width < 72:
-            continue
+        if available_width >= 72:
+            button_width = min(92, available_width)
+            button_width = max(78, button_width)
 
-        button_width = min(96, available_width)
-        button_width = max(78, button_width)
-
-        x1 = right_limit
-        x0 = x1 - button_width
-
-        if x0 < left_limit:
-            x0 = left_limit
-            x1 = x0 + button_width
-
-        if x1 > right_limit:
             x1 = right_limit
+            x0 = x1 - button_width
 
-        final_width = x1 - x0
-        if final_width < 72:
-            continue
+            if x0 < left_limit:
+                x0 = left_limit
+                x1 = x0 + button_width
 
-        y0 = max(total_rect.y0 - 1.5, 18)
-        y1 = y0 + 20
+            final_width = x1 - x0
+            if final_width >= 72:
+                y0 = max(total_rect.y0 - 1.5, 18)
+                y1 = y0 + 20
+                button_rect = fitz.Rect(x0, y0, x1, y1)
+                draw_gradient_button(page, button_rect, "Click to Pay")
+                page.insert_link(
+                    {
+                        "kind": fitz.LINK_URI,
+                        "from": button_rect,
+                        "uri": payment_url,
+                    }
+                )
+                return
 
-        button_rect = fitz.Rect(x0, y0, x1, y1)
-        draw_gradient_button(page, button_rect, "Click to Pay")
-        page.insert_link(
-            {
-                "kind": fitz.LINK_URI,
-                "from": button_rect,
-                "uri": payment_url,
-            }
-        )
-        return
-
-    page = doc[doc.page_count - 1]
-    button_rect = fitz.Rect(page.rect.width - 136, page.rect.height - 42, page.rect.width - 30, page.rect.height - 22)
+    page = doc[0]
+    button_rect = fitz.Rect(page.rect.width - 136, 36, page.rect.width - 30, 56)
     draw_gradient_button(page, button_rect, "Click to Pay")
     page.insert_link(
         {
