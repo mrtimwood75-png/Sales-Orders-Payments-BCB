@@ -231,6 +231,7 @@ def init_state():
         "bundle_only_stripe_session_id": "",
         "bundle_only_new_template_name": "",
         "bundle_only_embed_link_in_pdf": False,
+        "bundle_only_attachment_notice": "",
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -422,6 +423,39 @@ def seed_fields_from_pdf(fields):
     )
 
 
+def add_extra_files_to_bundle(extra_files):
+    if not extra_files:
+        return 0
+
+    if "bundle_only_attachments" not in st.session_state:
+        initialise_default_attachments()
+
+    existing_keys = {
+        (att["name"], len(att["bytes"]), att.get("source", "user"))
+        for att in st.session_state["bundle_only_attachments"]
+    }
+
+    added_count = 0
+    for up in extra_files:
+        up_bytes = up.getvalue()
+        item_key = (up.name, len(up_bytes), "user")
+        if item_key in existing_keys:
+            continue
+
+        st.session_state["bundle_only_attachments"].append(
+            {
+                "name": up.name,
+                "bytes": up_bytes,
+                "locked": False,
+                "source": "user",
+            }
+        )
+        existing_keys.add(item_key)
+        added_count += 1
+
+    return added_count
+
+
 def find_confirmation_span(page):
     try:
         text_dict = page.get_text("dict")
@@ -539,7 +573,7 @@ def add_payment_button_to_pdf(doc, payment_url):
 
         button_rect = fitz.Rect(x, y, x + button_w, y + button_h)
 
-        page.draw_rect(button_rect, color=(0, 0, 0), fill=(0, 0, 0), radius=2, overlay=True)
+        page.draw_rect(button_rect, color=(0, 0, 0), fill=(0, 0, 0), overlay=True)
         page.insert_textbox(
             button_rect,
             "Pay Now",
@@ -556,7 +590,7 @@ def add_payment_button_to_pdf(doc, payment_url):
     if not placed:
         page = doc[doc.page_count - 1]
         button_rect = fitz.Rect(page.rect.width - 133, page.rect.height - 44, page.rect.width - 18, page.rect.height - 24)
-        page.draw_rect(button_rect, color=(0, 0, 0), fill=(0, 0, 0), radius=2, overlay=True)
+        page.draw_rect(button_rect, color=(0, 0, 0), fill=(0, 0, 0), overlay=True)
         page.insert_textbox(
             button_rect,
             "Pay Now",
@@ -793,6 +827,17 @@ def build_sms_message(payload, template_text):
     )
 
 
+def render_download_button(button_label, bundle_bytes, bundle_name, file_count, doc_type, location_tag):
+    st.download_button(
+        button_label,
+        data=bundle_bytes,
+        file_name=bundle_name,
+        mime="application/pdf",
+        use_container_width=True,
+        key=f"bundle_only_download_{location_tag}_{bundle_name}_{len(bundle_bytes)}_{doc_type}_{st.session_state.get('bundle_only_embed_link_in_pdf', False)}",
+    )
+
+
 init_state()
 st.set_page_config(page_title=APP_TITLE, layout="wide")
 
@@ -837,6 +882,7 @@ if uploaded_pdf is not None:
         st.session_state["bundle_only_stripe_session_id"] = ""
         st.session_state["bundle_only_sms_status"] = ""
         st.session_state["bundle_only_embed_link_in_pdf"] = False
+        st.session_state["bundle_only_attachment_notice"] = ""
 
         initialise_default_attachments()
 
@@ -861,42 +907,15 @@ if st.session_state.get("bundle_only_order_pdf_bytes"):
         key="bundle_only_attachments_uploader",
     )
 
-    a1, a2 = st.columns([2, 1])
-
-    if a1.button("Add Files to Bundle", use_container_width=True):
-        if extra_files:
-            if "bundle_only_attachments" not in st.session_state:
-                initialise_default_attachments()
-
-            existing_keys = {
-                (att["name"], len(att["bytes"]), att.get("source", "user"))
-                for att in st.session_state["bundle_only_attachments"]
-            }
-
-            added_count = 0
-            for up in extra_files:
-                up_bytes = up.getvalue()
-                item_key = (up.name, len(up_bytes), "user")
-                if item_key in existing_keys:
-                    continue
-
-                st.session_state["bundle_only_attachments"].append(
-                    {
-                        "name": up.name,
-                        "bytes": up_bytes,
-                        "locked": False,
-                        "source": "user",
-                    }
-                )
-                added_count += 1
-
-            if added_count:
-                st.success(f"Added {added_count} attachment file(s)")
-            else:
-                st.info("No new files were added")
-            st.rerun()
+    if extra_files:
+        added_count = add_extra_files_to_bundle(extra_files)
+        if added_count:
+            st.session_state["bundle_only_attachment_notice"] = f"{added_count} file(s) added automatically"
         else:
-            st.warning("Choose files first")
+            st.session_state["bundle_only_attachment_notice"] = "Files already in bundle"
+
+    if st.session_state.get("bundle_only_attachment_notice"):
+        st.caption(st.session_state["bundle_only_attachment_notice"])
 
     attachments = st.session_state.get("bundle_only_attachments", [])
     file_count = len(attachments) + 1
@@ -918,7 +937,7 @@ if st.session_state.get("bundle_only_order_pdf_bytes"):
     st.text_area("Customer address", key="bundle_only_customer_address", height=110)
 
     st.markdown("### Stripe payment link")
-    p1, p2, p3 = st.columns([1.1, 1.1, 2.6])
+    p1, p2 = st.columns([1, 1.4])
 
     with p1:
         if st.button("Create Link", use_container_width=True):
@@ -943,12 +962,55 @@ if st.session_state.get("bundle_only_order_pdf_bytes"):
                 st.error(str(e))
 
     with p2:
-        st.text_input("Stripe Session ID", value=st.session_state.get("bundle_only_stripe_session_id", ""), disabled=True)
+        st.text_input(
+            "Stripe Session ID",
+            value=st.session_state.get("bundle_only_stripe_session_id", ""),
+            disabled=True,
+            key="bundle_only_stripe_session_id_display",
+        )
 
-    with p3:
-        st.checkbox("Apply payment link button to PDF output", key="bundle_only_embed_link_in_pdf")
+    st.text_input(
+        "Payment link",
+        value=st.session_state.get("bundle_only_payment_link", ""),
+        disabled=True,
+        key="bundle_only_payment_link_display",
+    )
+    st.checkbox("Apply payment link button to PDF output", key="bundle_only_embed_link_in_pdf")
 
-    st.text_input("Payment link", value=st.session_state.get("bundle_only_payment_link", ""), disabled=True)
+    bundle_bytes = None
+    bundle_name = None
+
+    try:
+        customer_file_part = safe_filename(st.session_state.get("bundle_only_customer_name", ""), "customer")
+        doc_suffix = "tax_invoice" if doc_type == "Tax Invoice" else "confirmation"
+        bundle_name = f"{customer_file_part}_{doc_suffix}.pdf"
+
+        bundle_bytes = build_single_bundle_pdf_bytes(
+            main_pdf_bytes=st.session_state["bundle_only_order_pdf_bytes"],
+            attachments=attachments,
+            logo_path=LOGO_PATH,
+            doc_type=doc_type,
+            payment_url=st.session_state.get("bundle_only_payment_link", ""),
+            embed_payment_link=bool(st.session_state.get("bundle_only_embed_link_in_pdf", False)),
+        )
+    except Exception as e:
+        st.error(f"Bundle build failed: {e}")
+
+    if bundle_bytes and bundle_name:
+        st.markdown("### Quick download")
+        q1, q2 = st.columns([2, 1])
+        with q1:
+            render_download_button(
+                f"Combine & download PDF ({file_count} files)",
+                bundle_bytes,
+                bundle_name,
+                file_count,
+                doc_type,
+                "top",
+            )
+        with q2:
+            if st.session_state.get("bundle_only_embed_link_in_pdf", False):
+                st.caption("Includes PDF payment link")
 
     st.markdown("### SMS payment request")
 
@@ -975,12 +1037,15 @@ if st.session_state.get("bundle_only_order_pdf_bytes"):
         help="Template only populates the SMS message. The SMS sends from the SMS message box below.",
     )
 
-    t1, t2, t3, t4 = st.columns([1.6, 1, 1, 1])
-
+    t1, t2 = st.columns([1.2, 2.8])
     with t1:
         st.text_input("New template name", key="bundle_only_new_template_name")
-
     with t2:
+        st.empty()
+
+    a1, a2, a3, a4 = st.columns(4)
+
+    with a1:
         if st.button("Load Template", use_container_width=True):
             st.session_state["bundle_only_sms_text"] = build_sms_message(
                 {
@@ -994,7 +1059,7 @@ if st.session_state.get("bundle_only_order_pdf_bytes"):
             )
             st.rerun()
 
-    with t3:
+    with a2:
         if st.button("Save Template", use_container_width=True):
             name = st.session_state["bundle_only_template_name"].strip()
             if not name:
@@ -1006,22 +1071,7 @@ if st.session_state.get("bundle_only_order_pdf_bytes"):
                 save_templates_to_file()
                 st.success(f'Template "{name}" saved.')
 
-    with t4:
-        if st.button("Delete Template", use_container_width=True):
-            current = st.session_state["bundle_only_template_name"]
-            if len(st.session_state["bundle_only_templates"]) == 1:
-                st.error("At least one template must remain.")
-            else:
-                del st.session_state["bundle_only_templates"][current]
-                save_templates_to_file()
-                remaining = list(st.session_state["bundle_only_templates"].keys())
-                st.session_state["bundle_only_template_name"] = remaining[0]
-                st.session_state["bundle_only_template_text"] = st.session_state["bundle_only_templates"][remaining[0]]["text"]
-                st.rerun()
-
-    add_col, apply_col = st.columns([1.4, 4.6])
-
-    with add_col:
+    with a3:
         if st.button("Add Template", use_container_width=True):
             new_name = st.session_state["bundle_only_new_template_name"].strip()
             if not new_name:
@@ -1039,32 +1089,49 @@ if st.session_state.get("bundle_only_order_pdf_bytes"):
                 st.success(f'Template "{new_name}" created.')
                 st.rerun()
 
-    with apply_col:
-        if st.button("Populate SMS message from current template", use_container_width=True):
-            st.session_state["bundle_only_sms_text"] = build_sms_message(
-                {
-                    "customer_name": st.session_state.get("bundle_only_customer_name", ""),
-                    "order_number": st.session_state.get("bundle_only_order_number", ""),
-                    "payment_amount": parse_numeric_input(st.session_state.get("bundle_only_payment_request", ""), 0),
-                    "stripe_checkout_url": st.session_state.get("bundle_only_payment_link", ""),
-                    "mobile": normalize_mobile_au(st.session_state.get("bundle_only_phone", "")),
-                },
-                st.session_state.get("bundle_only_template_text", ""),
-            )
-            st.rerun()
+    with a4:
+        if st.button("Delete Template", use_container_width=True):
+            current = st.session_state["bundle_only_template_name"]
+            if len(st.session_state["bundle_only_templates"]) == 1:
+                st.error("At least one template must remain.")
+            else:
+                del st.session_state["bundle_only_templates"][current]
+                save_templates_to_file()
+                remaining = list(st.session_state["bundle_only_templates"].keys())
+                st.session_state["bundle_only_template_name"] = remaining[0]
+                st.session_state["bundle_only_template_text"] = st.session_state["bundle_only_templates"][remaining[0]]["text"]
+                st.rerun()
 
-    sms_left, sms_right = st.columns([2.3, 1.2])
+    if st.button("Populate SMS message from current template", use_container_width=True):
+        st.session_state["bundle_only_sms_text"] = build_sms_message(
+            {
+                "customer_name": st.session_state.get("bundle_only_customer_name", ""),
+                "order_number": st.session_state.get("bundle_only_order_number", ""),
+                "payment_amount": parse_numeric_input(st.session_state.get("bundle_only_payment_request", ""), 0),
+                "stripe_checkout_url": st.session_state.get("bundle_only_payment_link", ""),
+                "mobile": normalize_mobile_au(st.session_state.get("bundle_only_phone", "")),
+            },
+            st.session_state.get("bundle_only_template_text", ""),
+        )
+        st.rerun()
+
+    sms_left, sms_right = st.columns([2.2, 1.1], gap="large")
 
     with sms_left:
         st.text_area(
             "SMS message",
             key="bundle_only_sms_text",
-            height=170,
+            height=180,
             help="Whatever is typed in this box is what will be sent.",
         )
 
     with sms_right:
-        st.text_input("SMS mobile", value=normalize_mobile_au(st.session_state.get("bundle_only_phone", "")), disabled=True)
+        st.text_input(
+            "SMS mobile",
+            value=normalize_mobile_au(st.session_state.get("bundle_only_phone", "")),
+            disabled=True,
+            key="bundle_only_sms_mobile_display",
+        )
 
         if st.button("Send SMS", use_container_width=True):
             mobile = normalize_mobile_au(st.session_state.get("bundle_only_phone", ""))
@@ -1078,7 +1145,12 @@ if st.session_state.get("bundle_only_order_pdf_bytes"):
                 st.session_state["bundle_only_sms_confirm_open"] = True
                 st.rerun()
 
-        st.text_input("SMS status", value=st.session_state.get("bundle_only_sms_status", ""), disabled=True)
+        st.text_input(
+            "SMS status",
+            value=st.session_state.get("bundle_only_sms_status", ""),
+            disabled=True,
+            key="bundle_only_sms_status_display",
+        )
 
     if st.session_state.get("bundle_only_sms_confirm_open"):
         with st.container(border=True):
@@ -1110,39 +1182,23 @@ if st.session_state.get("bundle_only_order_pdf_bytes"):
                 st.session_state["bundle_only_sms_confirm_open"] = False
                 st.rerun()
 
-    try:
-        customer_file_part = safe_filename(st.session_state.get("bundle_only_customer_name", ""), "customer")
-        doc_suffix = "tax_invoice" if doc_type == "Tax Invoice" else "confirmation"
-        bundle_name = f"{customer_file_part}_{doc_suffix}.pdf"
-
-        bundle_bytes = build_single_bundle_pdf_bytes(
-            main_pdf_bytes=st.session_state["bundle_only_order_pdf_bytes"],
-            attachments=attachments,
-            logo_path=LOGO_PATH,
-            doc_type=doc_type,
-            payment_url=st.session_state.get("bundle_only_payment_link", ""),
-            embed_payment_link=bool(st.session_state.get("bundle_only_embed_link_in_pdf", False)),
-        )
-
+    if bundle_bytes and bundle_name:
         st.markdown("### Final PDF")
         d1, d2 = st.columns([2, 1])
 
         with d1:
-            st.download_button(
+            render_download_button(
                 f"Combine & download PDF ({file_count} files)",
-                data=bundle_bytes,
-                file_name=bundle_name,
-                mime="application/pdf",
-                use_container_width=True,
-                key=f"bundle_only_download_{bundle_name}_{len(bundle_bytes)}_{doc_type}_{st.session_state.get('bundle_only_embed_link_in_pdf', False)}",
+                bundle_bytes,
+                bundle_name,
+                file_count,
+                doc_type,
+                "bottom",
             )
 
         with d2:
             if st.session_state.get("bundle_only_embed_link_in_pdf", False):
-                st.caption("Payment link button will be added to the PDF output.")
-
-    except Exception as e:
-        st.error(f"Bundle build failed: {e}")
+                st.caption("Includes PDF payment link")
 
     if attachments:
         st.caption("Bundle order:")
