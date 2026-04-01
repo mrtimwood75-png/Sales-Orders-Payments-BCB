@@ -366,7 +366,7 @@ def extract_sales_order_fields(pdf_bytes):
                 address_lines.append(line)
 
         if address_lines:
-            if fields["customer_name"] and address_lines and clean_text(address_lines[0]).lower() == clean_text(fields["customer_name"]).lower():
+            if fields["customer_name"] and clean_text(address_lines[0]).lower() == clean_text(fields["customer_name"]).lower():
                 address_lines = address_lines[1:]
             fields["customer_address"] = "\n".join(address_lines).strip()
 
@@ -508,15 +508,7 @@ def add_payment_button_to_pdf(doc, payment_url):
     if doc.page_count > 1:
         target_pages.insert(0, doc.page_count - 2)
 
-    label_priority = [
-        "Balance due",
-        "balance due",
-        "Total",
-        "total",
-        "Amount",
-        "amount",
-    ]
-
+    label_priority = ["Balance due", "balance due", "Total", "total", "Amount", "amount"]
     placed = False
 
     for page_index in target_pages:
@@ -557,13 +549,7 @@ def add_payment_button_to_pdf(doc, payment_url):
             align=1,
             overlay=True,
         )
-        page.insert_link(
-            {
-                "kind": fitz.LINK_URI,
-                "from": button_rect,
-                "uri": payment_url,
-            }
-        )
+        page.insert_link({"kind": fitz.LINK_URI, "from": button_rect, "uri": payment_url})
         placed = True
         break
 
@@ -580,13 +566,7 @@ def add_payment_button_to_pdf(doc, payment_url):
             align=1,
             overlay=True,
         )
-        page.insert_link(
-            {
-                "kind": fitz.LINK_URI,
-                "from": button_rect,
-                "uri": payment_url,
-            }
-        )
+        page.insert_link({"kind": fitz.LINK_URI, "from": button_rect, "uri": payment_url})
 
 
 def stamp_main_pdf_bytes(pdf_bytes, logo_path, doc_type, payment_url="", embed_payment_link=False):
@@ -814,7 +794,6 @@ def build_sms_message(payload, template_text):
 
 
 init_state()
-
 st.set_page_config(page_title=APP_TITLE, layout="wide")
 
 top_nav_left, top_nav_right = st.columns([1, 5])
@@ -839,11 +818,7 @@ if top_b.button("Reset Session", use_container_width=True):
     reset_session()
     st.rerun()
 
-uploaded_pdf = st.file_uploader(
-    "Upload sales order PDF",
-    type=["pdf"],
-    key="bundle_only_orders_pdf",
-)
+uploaded_pdf = st.file_uploader("Upload sales order PDF", type=["pdf"], key="bundle_only_orders_pdf")
 
 if uploaded_pdf is not None:
     pdf_bytes = uploaded_pdf.getvalue()
@@ -928,13 +903,13 @@ if st.session_state.get("bundle_only_order_pdf_bytes"):
     doc_type = st.session_state.get("bundle_only_doc_type", "Confirmation")
 
     st.markdown("### Captured order fields")
-
     f1, f2 = st.columns(2)
+
     with f1:
         st.text_input("Order number", key="bundle_only_order_number")
         st.text_input("Order total", key="bundle_only_order_total")
         st.text_input("Email", key="bundle_only_email")
-        st.text_input("Customer name", key="bundle_only_customer_name", label_visibility="collapsed")
+
     with f2:
         st.text_input("Order balance", key="bundle_only_order_balance")
         st.text_input("Phone", key="bundle_only_phone")
@@ -1001,13 +976,24 @@ if st.session_state.get("bundle_only_order_pdf_bytes"):
     )
 
     t1, t2, t3, t4 = st.columns([1.6, 1, 1, 1])
+
     with t1:
         st.text_input("New template name", key="bundle_only_new_template_name")
+
     with t2:
         if st.button("Load Template", use_container_width=True):
-            name = st.session_state["bundle_only_template_name"]
-            st.session_state["bundle_only_sms_text"] = st.session_state["bundle_only_templates"][name]["text"]
+            st.session_state["bundle_only_sms_text"] = build_sms_message(
+                {
+                    "customer_name": st.session_state.get("bundle_only_customer_name", ""),
+                    "order_number": st.session_state.get("bundle_only_order_number", ""),
+                    "payment_amount": parse_numeric_input(st.session_state.get("bundle_only_payment_request", ""), 0),
+                    "stripe_checkout_url": st.session_state.get("bundle_only_payment_link", ""),
+                    "mobile": normalize_mobile_au(st.session_state.get("bundle_only_phone", "")),
+                },
+                st.session_state["bundle_only_template_text"],
+            )
             st.rerun()
+
     with t3:
         if st.button("Save Template", use_container_width=True):
             name = st.session_state["bundle_only_template_name"].strip()
@@ -1019,6 +1005,7 @@ if st.session_state.get("bundle_only_order_pdf_bytes"):
                 }
                 save_templates_to_file()
                 st.success(f'Template "{name}" saved.')
+
     with t4:
         if st.button("Delete Template", use_container_width=True):
             current = st.session_state["bundle_only_template_name"]
@@ -1033,6 +1020,7 @@ if st.session_state.get("bundle_only_order_pdf_bytes"):
                 st.rerun()
 
     add_col, apply_col = st.columns([1.4, 4.6])
+
     with add_col:
         if st.button("Add Template", use_container_width=True):
             new_name = st.session_state["bundle_only_new_template_name"].strip()
@@ -1077,6 +1065,7 @@ if st.session_state.get("bundle_only_order_pdf_bytes"):
 
     with sms_right:
         st.text_input("SMS mobile", value=normalize_mobile_au(st.session_state.get("bundle_only_phone", "")), disabled=True)
+
         if st.button("Send SMS", use_container_width=True):
             mobile = normalize_mobile_au(st.session_state.get("bundle_only_phone", ""))
             if not mobile:
@@ -1096,6 +1085,7 @@ if st.session_state.get("bundle_only_order_pdf_bytes"):
             mobile_fmt = st.session_state.get("bundle_only_sms_confirm_phone", "")
             st.warning(f"You are about to send an SMS to {mobile_fmt}")
             c1, c2 = st.columns(2)
+
             if c1.button("OK", use_container_width=True):
                 try:
                     phone_value = normalize_mobile_au(st.session_state.get("bundle_only_phone", ""))
@@ -1115,6 +1105,7 @@ if st.session_state.get("bundle_only_order_pdf_bytes"):
                     st.session_state["bundle_only_sms_status"] = f"Failed ({e})"
                     st.session_state["bundle_only_sms_confirm_open"] = False
                     st.error(str(e))
+
             if c2.button("Cancel", use_container_width=True):
                 st.session_state["bundle_only_sms_confirm_open"] = False
                 st.rerun()
@@ -1135,6 +1126,7 @@ if st.session_state.get("bundle_only_order_pdf_bytes"):
 
         st.markdown("### Final PDF")
         d1, d2 = st.columns([2, 1])
+
         with d1:
             st.download_button(
                 f"Combine & download PDF ({file_count} files)",
@@ -1144,9 +1136,11 @@ if st.session_state.get("bundle_only_order_pdf_bytes"):
                 use_container_width=True,
                 key=f"bundle_only_download_{bundle_name}_{len(bundle_bytes)}_{doc_type}_{st.session_state.get('bundle_only_embed_link_in_pdf', False)}",
             )
+
         with d2:
             if st.session_state.get("bundle_only_embed_link_in_pdf", False):
                 st.caption("Payment link button will be added to the PDF output.")
+
     except Exception as e:
         st.error(f"Bundle build failed: {e}")
 
