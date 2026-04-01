@@ -1,333 +1,405 @@
-import io
-import os
+import re
 from pathlib import Path
-from typing import List, Tuple
 
 import streamlit as st
-from PIL import Image
-from pypdf import PdfReader, PdfWriter
-from reportlab.lib.pagesizes import A4
-from reportlab.lib.utils import ImageReader
-from reportlab.pdfgen import canvas
+
+try:
+    import fitz  # PyMuPDF
+except Exception:
+    fitz = None
 
 
-st.set_page_config(page_title="Logo and Bundle PDF App", layout="wide")
+APP_TITLE = "Add Logo & Bundle Attachments"
+BASE_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = BASE_DIR.parent
+DEFAULT_FILES_DIR = PROJECT_ROOT / "assets" / "default-files"
 
 
-APP_TITLE = "Logo and Bundle PDF App"
-DEFAULT_TERMS_FILENAMES = [
-    "Terms & Conditions.pdf",
-    "Terms and Conditions.pdf",
-    "terms_and_conditions.pdf",
-]
-
-
-def format_size(num_bytes: int) -> str:
-    if num_bytes < 1024:
-        return f"{num_bytes} B"
-    if num_bytes < 1024 * 1024:
-        return f"{num_bytes / 1024:.1f} KB"
-    return f"{num_bytes / (1024 * 1024):.1f} MB"
-
-
-def safe_filename(value: str) -> str:
-    value = (value or "customer").strip().lower()
-    cleaned = []
-    for ch in value:
-        if ch.isalnum():
-            cleaned.append(ch)
-        elif ch in (" ", "-", "_"):
-            cleaned.append("-")
-    out = "".join(cleaned)
-    while "--" in out:
-        out = out.replace("--", "-")
-    return out.strip("-") or "customer"
-
-
-def find_default_terms_file() -> Path | None:
-    here = Path(".")
-    for name in DEFAULT_TERMS_FILENAMES:
-        p = here / name
-        if p.exists() and p.is_file():
+def resolve_logo_path():
+    candidates = [
+        PROJECT_ROOT / "assets" / "boconcept_logo.png",
+        PROJECT_ROOT / "assets" / "boconcept_logo.PNG",
+        PROJECT_ROOT / "assets" / "BoConcept_logo.png",
+        PROJECT_ROOT / "assets" / "BoConcept_logo.PNG",
+    ]
+    for p in candidates:
+        if p.exists():
             return p
     return None
 
 
-def create_cover_page_pdf(doc_type: str, customer_name: str, logo_bytes: bytes | None) -> bytes:
-    buffer = io.BytesIO()
-    c = canvas.Canvas(buffer, pagesize=A4)
-    width, height = A4
+LOGO_PATH = resolve_logo_path()
 
-    c.setFillColorRGB(1, 1, 1)
-    c.rect(0, 0, width, height, fill=1, stroke=0)
 
-    if logo_bytes:
-        try:
-            img = Image.open(io.BytesIO(logo_bytes))
-            img_width, img_height = img.size
-            max_width = 180
-            max_height = 80
-            scale = min(max_width / img_width, max_height / img_height, 1)
-            draw_w = img_width * scale
-            draw_h = img_height * scale
-            c.drawImage(
-                ImageReader(img),
-                56,
-                height - 72 - draw_h,
-                width=draw_w,
-                height=draw_h,
-                mask="auto",
+def get_default_attachments():
+    attachments = []
+    if not DEFAULT_FILES_DIR.exists() or not DEFAULT_FILES_DIR.is_dir():
+        return attachments
+
+    allowed_exts = {".pdf", ".png", ".jpg", ".jpeg", ".webp"}
+    for path in sorted(DEFAULT_FILES_DIR.iterdir(), key=lambda p: p.name.lower()):
+        if path.is_file() and path.suffix.lower() in allowed_exts:
+            attachments.append(
+                {
+                    "name": path.name,
+                    "bytes": path.read_bytes(),
+                    "locked": True,
+                    "source": "default",
+                }
             )
-        except Exception:
-            pass
-
-    c.setFont("Helvetica-Bold", 28)
-    c.setFillColorRGB(0.07, 0.09, 0.15)
-    c.drawString(56, height - 190, doc_type)
-
-    c.setFont("Helvetica", 16)
-    c.setFillColorRGB(0.27, 0.31, 0.36)
-    c.drawString(56, height - 230, customer_name or "Customer")
-
-    c.setStrokeColorRGB(0.86, 0.88, 0.90)
-    c.setLineWidth(1)
-    c.line(56, height - 252, width - 56, height - 252)
-
-    c.setFont("Helvetica-Bold", 13)
-    c.setFillColorRGB(0.07, 0.09, 0.15)
-    c.drawString(56, height - 290, "Combined file bundle")
-
-    c.setFont("Helvetica", 11)
-    c.setFillColorRGB(0.42, 0.46, 0.50)
-    c.drawString(56, height - 315, "Generated from Streamlit app")
-
-    c.showPage()
-    c.save()
-    buffer.seek(0)
-    return buffer.read()
+    return attachments
 
 
-def image_to_pdf_bytes(image_bytes: bytes) -> bytes:
-    img = Image.open(io.BytesIO(image_bytes))
-    if img.mode in ("RGBA", "P"):
-        img = img.convert("RGB")
-
-    page_w, page_h = A4
-    margin = 32
-    max_w = page_w - margin * 2
-    max_h = page_h - margin * 2
-
-    img_w, img_h = img.size
-    scale = min(max_w / img_w, max_h / img_h)
-    draw_w = img_w * scale
-    draw_h = img_h * scale
-    x = (page_w - draw_w) / 2
-    y = (page_h - draw_h) / 2
-
-    buffer = io.BytesIO()
-    c = canvas.Canvas(buffer, pagesize=A4)
-    c.setFillColorRGB(1, 1, 1)
-    c.rect(0, 0, page_w, page_h, fill=1, stroke=0)
-    c.drawImage(ImageReader(img), x, y, width=draw_w, height=draw_h, mask="auto")
-    c.showPage()
-    c.save()
-    buffer.seek(0)
-    return buffer.read()
+def initialise_default_attachments():
+    st.session_state["bundle_only_attachments"] = get_default_attachments()
 
 
-def append_pdf_bytes(writer: PdfWriter, pdf_bytes: bytes) -> None:
-    reader = PdfReader(io.BytesIO(pdf_bytes))
-    for page in reader.pages:
-        writer.add_page(page)
+def reset_session():
+    keys = [
+        "bundle_only_order_pdf_name",
+        "bundle_only_order_pdf_bytes",
+        "bundle_only_attachments",
+        "bundle_only_customer_name",
+        "bundle_only_doc_type",
+    ]
+    for key in keys:
+        if key in st.session_state:
+            del st.session_state[key]
 
 
-def combine_bundle(
-    doc_type: str,
-    customer_name: str,
-    logo_bytes: bytes | None,
-    ordered_items: List[Tuple[str, bytes, str]],
-) -> bytes:
-    writer = PdfWriter()
-
-    cover_pdf = create_cover_page_pdf(doc_type, customer_name, logo_bytes)
-    append_pdf_bytes(writer, cover_pdf)
-
-    for _, file_bytes, file_type in ordered_items:
-        if file_type == "pdf":
-            append_pdf_bytes(writer, file_bytes)
-        elif file_type == "image":
-            image_pdf = image_to_pdf_bytes(file_bytes)
-            append_pdf_bytes(writer, image_pdf)
-
-    out = io.BytesIO()
-    writer.write(out)
-    out.seek(0)
-    return out.read()
+def clean_text(value):
+    if value is None:
+        return ""
+    return re.sub(r"\s+", " ", str(value)).strip()
 
 
-def init_state():
-    if "bundle_items" not in st.session_state:
-        st.session_state.bundle_items = []
-    if "doc_type" not in st.session_state:
-        st.session_state.doc_type = "Confirmation"
+def get_page_text_left_margin(page):
+    try:
+        blocks = page.get_text("blocks")
+    except Exception:
+        return 24
+
+    candidates = []
+    for block in blocks:
+        if len(block) < 5:
+            continue
+        x0, y0, x1, y1, text = block[:5]
+        text_clean = clean_text(text)
+        if not text_clean:
+            continue
+        if y0 < 10:
+            continue
+        candidates.append(float(x0))
+
+    if not candidates:
+        return 24
+
+    left = min(candidates)
+    return max(18, min(left, 80))
 
 
-def add_uploaded_file(name: str, data: bytes, kind: str):
-    existing_keys = {item["key"] for item in st.session_state.bundle_items}
-    key = f"{name}-{len(data)}-{kind}"
-    if key in existing_keys:
+def parse_sales_order_customer_name(pdf_bytes):
+    if fitz is None:
+        return ""
+
+    try:
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        first_page = doc[0].get_text("text") if doc.page_count else ""
+        doc.close()
+    except Exception:
+        return ""
+
+    lines = [clean_text(x) for x in first_page.splitlines() if clean_text(x)]
+    for line in lines[:12]:
+        if not re.search(
+            r"sales order|date|phone|email|misc\. charges|gst|total|prepayment|balance due",
+            line,
+            re.IGNORECASE,
+        ):
+            return line
+    return ""
+
+
+def replace_document_title_on_first_page(doc, new_title):
+    if doc.page_count == 0:
         return
-    st.session_state.bundle_items.append(
-        {
-            "key": key,
-            "name": name,
-            "bytes": data,
-            "type": kind,
-            "size": len(data),
-        }
+
+    page = doc[0]
+
+    search_terms = ["Confirmation", "Invoice"]
+    found_rect = None
+
+    for term in search_terms:
+        try:
+            rects = page.search_for(term)
+        except Exception:
+            rects = []
+        if rects:
+            found_rect = rects[0]
+            break
+
+    if found_rect:
+        redact_rect = fitz.Rect(
+            found_rect.x0 - 8,
+            found_rect.y0 - 6,
+            found_rect.x1 + 8,
+            found_rect.y1 + 6,
+        )
+        page.add_redact_annot(redact_rect, fill=(1, 1, 1))
+        page.apply_redactions()
+
+        page.insert_textbox(
+            redact_rect,
+            new_title,
+            fontsize=22,
+            fontname="helv",
+            align=1,
+            color=(0, 0, 0),
+            overlay=True,
+        )
+        return
+
+    fallback_rect = fitz.Rect(280, 95, 500, 145)
+    page.draw_rect(fallback_rect, color=None, fill=(1, 1, 1), overlay=True)
+    page.insert_textbox(
+        fallback_rect,
+        new_title,
+        fontsize=22,
+        fontname="helv",
+        align=1,
+        color=(0, 0, 0),
+        overlay=True,
     )
 
 
-def move_item_up(idx: int):
-    if idx <= 0:
+def stamp_main_pdf_bytes(pdf_bytes, logo_path, document_title):
+    if fitz is None:
+        raise RuntimeError("PyMuPDF not installed")
+
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+
+    for page in doc:
+        if logo_path and Path(logo_path).exists():
+            left_x = get_page_text_left_margin(page)
+            logo_rect = fitz.Rect(left_x, 18, left_x + 126, 60)
+            page.insert_image(
+                logo_rect,
+                filename=str(logo_path),
+                keep_proportion=True,
+                overlay=True,
+            )
+
+    replace_document_title_on_first_page(doc, document_title)
+
+    output = doc.tobytes(garbage=4, deflate=True)
+    doc.close()
+    return output
+
+
+def append_image_bytes_as_pdf_pages(bundle_doc, image_bytes):
+    img_doc = fitz.open(stream=image_bytes)
+    pdf_bytes = img_doc.convert_to_pdf()
+    img_doc.close()
+
+    img_pdf = fitz.open("pdf", pdf_bytes)
+    bundle_doc.insert_pdf(img_pdf)
+    img_pdf.close()
+
+
+def append_file_bytes_to_pdf(bundle_doc, file_name, file_bytes):
+    ext = Path(file_name).suffix.lower()
+
+    if ext == ".pdf":
+        src = fitz.open(stream=file_bytes, filetype="pdf")
+        bundle_doc.insert_pdf(src)
+        src.close()
         return
-    items = st.session_state.bundle_items
-    items[idx - 1], items[idx] = items[idx], items[idx - 1]
 
-
-def move_item_down(idx: int):
-    items = st.session_state.bundle_items
-    if idx >= len(items) - 1:
+    if ext in [".png", ".jpg", ".jpeg", ".webp"]:
+        append_image_bytes_as_pdf_pages(bundle_doc, file_bytes)
         return
-    items[idx + 1], items[idx] = items[idx], items[idx + 1]
+
+    raise RuntimeError(f"Unsupported attachment type: {file_name}")
 
 
-def remove_item(idx: int):
-    st.session_state.bundle_items.pop(idx)
+def build_single_bundle_pdf_bytes(main_pdf_bytes, attachments, logo_path, document_title):
+    if fitz is None:
+        raise RuntimeError("PyMuPDF not installed")
+
+    stamped_main_bytes = stamp_main_pdf_bytes(main_pdf_bytes, logo_path, document_title)
+
+    final_doc = fitz.open()
+
+    main_doc = fitz.open(stream=stamped_main_bytes, filetype="pdf")
+    final_doc.insert_pdf(main_doc)
+    main_doc.close()
+
+    for att in attachments:
+        append_file_bytes_to_pdf(final_doc, att["name"], att["bytes"])
+
+    output = final_doc.tobytes(garbage=4, deflate=True)
+    final_doc.close()
+    return output
 
 
-init_state()
+def safe_filename(value, fallback="customer"):
+    cleaned = re.sub(r"[^A-Za-z0-9_-]+", "_", (value or "").strip())
+    cleaned = cleaned.strip("_")
+    return cleaned or fallback
+
+
+st.set_page_config(page_title=APP_TITLE, layout="wide")
+
+if "bundle_only_doc_type" not in st.session_state:
+    st.session_state["bundle_only_doc_type"] = "Confirmation"
+
+top_nav_left, top_nav_right = st.columns([1, 5])
+with top_nav_left:
+    if st.button("Home", use_container_width=True):
+        st.switch_page("main.py")
+with top_nav_right:
+    if LOGO_PATH:
+        st.image(str(LOGO_PATH), width=220)
 
 st.title(APP_TITLE)
 
-left, right = st.columns([1.1, 0.9], gap="large")
+top_a, top_b = st.columns([3, 1])
+default_attachments = get_default_attachments()
+if default_attachments:
+    top_a.caption(f"Locked default bundle files: {len(default_attachments)}")
+else:
+    top_a.warning("No files found in assets/default-files")
 
-with left:
-    customer_name = st.text_input("Customer", placeholder="Enter customer name")
+if top_b.button("Reset Session", use_container_width=True):
+    reset_session()
+    st.rerun()
 
-    st.session_state.doc_type = st.segmented_control(
-        "Document type",
-        options=["Confirmation", "Invoice"],
-        default=st.session_state.doc_type,
-        selection_mode="single",
-    ) or "Confirmation"
+uploaded_pdf = st.file_uploader(
+    "Upload sales order PDF",
+    type=["pdf"],
+    key="bundle_only_orders_pdf",
+)
 
-    sales_order_pdf = st.file_uploader(
-        "Upload sales order PDF",
-        type=["pdf"],
-        accept_multiple_files=False,
-        key="sales_order_pdf",
-    )
+if uploaded_pdf is not None:
+    pdf_bytes = uploaded_pdf.getvalue()
+
+    if (
+        st.session_state.get("bundle_only_order_pdf_name") != uploaded_pdf.name
+        or st.session_state.get("bundle_only_order_pdf_bytes") != pdf_bytes
+    ):
+        st.session_state["bundle_only_order_pdf_name"] = uploaded_pdf.name
+        st.session_state["bundle_only_order_pdf_bytes"] = pdf_bytes
+        st.session_state["bundle_only_customer_name"] = parse_sales_order_customer_name(pdf_bytes)
+        initialise_default_attachments()
+
+if st.session_state.get("bundle_only_order_pdf_bytes"):
+    left_col, right_col = st.columns([2.2, 1.2])
+
+    with left_col:
+        st.text_input(
+            "Customer",
+            value=st.session_state.get("bundle_only_customer_name", ""),
+            disabled=True,
+        )
+
+    with right_col:
+        doc_type = st.radio(
+            "Document type",
+            ["Confirmation", "Invoice"],
+            index=0 if st.session_state.get("bundle_only_doc_type", "Confirmation") == "Confirmation" else 1,
+            horizontal=True,
+            key="bundle_only_doc_type",
+        )
 
     extra_files = st.file_uploader(
         "Upload extra PDF or image files",
-        type=["pdf", "png", "jpg", "jpeg"],
+        type=["pdf", "png", "jpg", "jpeg", "webp"],
         accept_multiple_files=True,
-        key="extra_files",
+        key="bundle_only_attachments_uploader",
     )
 
-    logo_file = st.file_uploader(
-        "Upload logo",
-        type=["png", "jpg", "jpeg"],
-        accept_multiple_files=False,
-        key="logo_file",
-    )
+    a1, a2 = st.columns([2, 1])
 
-    if st.button("Add files to bundle", use_container_width=True):
-        if sales_order_pdf is not None:
-            add_uploaded_file(sales_order_pdf.name, sales_order_pdf.getvalue(), "pdf")
-
+    if a1.button("Add Files to Bundle", use_container_width=True):
         if extra_files:
-            for f in extra_files:
-                ext = f.name.lower().split(".")[-1]
-                kind = "pdf" if ext == "pdf" else "image"
-                add_uploaded_file(f.name, f.getvalue(), kind)
+            if "bundle_only_attachments" not in st.session_state:
+                initialise_default_attachments()
 
-        default_terms = find_default_terms_file()
-        if default_terms is not None:
-            already_present = any(
-                item["name"] == default_terms.name for item in st.session_state.bundle_items
-            )
-            if not already_present:
-                add_uploaded_file(default_terms.name, default_terms.read_bytes(), "pdf")
+            existing_keys = {
+                (att["name"], len(att["bytes"]), att.get("source", "user"))
+                for att in st.session_state["bundle_only_attachments"]
+            }
 
-        st.success("Files added to bundle.")
+            added_count = 0
+            for up in extra_files:
+                item_key = (up.name, len(up.getvalue()), "user")
+                if item_key in existing_keys:
+                    continue
 
-    st.subheader("Bundle order")
+                st.session_state["bundle_only_attachments"].append(
+                    {
+                        "name": up.name,
+                        "bytes": up.getvalue(),
+                        "locked": False,
+                        "source": "user",
+                    }
+                )
+                added_count += 1
 
-    if not st.session_state.bundle_items:
-        st.info("No files added yet.")
-    else:
-        for idx, item in enumerate(st.session_state.bundle_items):
-            row = st.columns([0.08, 0.58, 0.12, 0.11, 0.11])
-            row[0].write(f"{idx + 1}.")
-            row[1].write(f"**{item['name']}**  \n{format_size(item['size'])}")
-            if row[2].button("↑", key=f"up_{item['key']}", use_container_width=True):
-                move_item_up(idx)
-                st.rerun()
-            if row[3].button("↓", key=f"down_{item['key']}", use_container_width=True):
-                move_item_down(idx)
-                st.rerun()
-            if row[4].button("✕", key=f"del_{item['key']}", use_container_width=True):
-                remove_item(idx)
-                st.rerun()
+            if added_count:
+                st.success(f"Added {added_count} attachment file(s)")
+            else:
+                st.info("No new files were added")
+            st.rerun()
+        else:
+            st.warning("Choose files first")
 
-    col_a, col_b = st.columns(2)
-    if col_a.button("Reset bundle", use_container_width=True):
-        st.session_state.bundle_items = []
-        st.rerun()
+    attachments = st.session_state.get("bundle_only_attachments", [])
+    file_count = len(attachments) + 1
 
-    doc_type = st.session_state.doc_type
-    output_name = f"{safe_filename(customer_name)}-{doc_type.lower()}.pdf"
+    try:
+        customer_file_part = safe_filename(
+            st.session_state.get("bundle_only_customer_name", ""),
+            "customer",
+        )
+        bundle_name = f"{customer_file_part}_{doc_type.lower()}.pdf"
 
-    if st.session_state.bundle_items:
-        combined_pdf_bytes = combine_bundle(
-            doc_type=doc_type,
-            customer_name=customer_name,
-            logo_bytes=logo_file.getvalue() if logo_file else None,
-            ordered_items=[
-                (item["name"], item["bytes"], item["type"])
-                for item in st.session_state.bundle_items
-            ],
+        bundle_bytes = build_single_bundle_pdf_bytes(
+            main_pdf_bytes=st.session_state["bundle_only_order_pdf_bytes"],
+            attachments=attachments,
+            logo_path=LOGO_PATH,
+            document_title=doc_type,
         )
 
-        col_b.download_button(
-            "Combine & download PDF",
-            data=combined_pdf_bytes,
-            file_name=output_name,
+        a2.download_button(
+            f"Combine & download PDF ({file_count} files)",
+            data=bundle_bytes,
+            file_name=bundle_name,
             mime="application/pdf",
             use_container_width=True,
+            key=f"bundle_only_download_{bundle_name}_{len(bundle_bytes)}_{doc_type}",
         )
+    except Exception as e:
+        a2.button(
+            f"Combine & download PDF ({file_count} files)",
+            use_container_width=True,
+            disabled=True,
+        )
+        st.error(f"Bundle build failed: {e}")
 
-with right:
-    st.subheader("Preview")
-    st.markdown(f"## {st.session_state.doc_type}")
-    st.write(customer_name or "Customer name")
-    st.caption(f"{len(st.session_state.bundle_items)} bundled file(s)")
-
-    st.markdown("### Included files")
-    if not st.session_state.bundle_items:
-        st.write("Your bundled files will appear here.")
-    else:
-        for idx, item in enumerate(st.session_state.bundle_items, start=1):
-            st.write(f"{idx}. {item['name']} — {format_size(item['size'])}")
-
-    st.markdown("### Logo")
-    if logo_file:
-        st.write(logo_file.name)
-        try:
-            st.image(logo_file.getvalue(), width=220)
-        except Exception:
-            pass
-    else:
-        st.write("No logo uploaded")
+    if attachments:
+        st.caption("Bundle order:")
+        for i, att in enumerate(attachments, start=1):
+            r1, r2, r3 = st.columns([1, 7, 1])
+            r1.write(i)
+            suffix = " (default)" if att.get("locked") else ""
+            r2.write(f"{att['name']}{suffix}")
+            if att.get("locked"):
+                r3.write("—")
+            else:
+                if r3.button("Remove", key=f"bundle_only_remove_att_{i}"):
+                    attachments.pop(i - 1)
+                    st.session_state["bundle_only_attachments"] = attachments
+                    st.rerun()
+else:
+    st.info("Upload a sales order PDF to begin.")
