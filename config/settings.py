@@ -23,9 +23,38 @@ STRIPE_SECRET_KEY = os.getenv('STRIPE_SECRET_KEY', '')
 STRIPE_SUCCESS_URL = os.getenv('STRIPE_SUCCESS_URL', 'https://example.com/success')
 STRIPE_CANCEL_URL = os.getenv('STRIPE_CANCEL_URL', 'https://example.com/cancel')
 
-DIRECTSMS_API_KEY = os.getenv('DIRECTSMS_API_KEY', '')
-DIRECTSMS_API_SECRET = os.getenv('DIRECTSMS_API_SECRET', '')
-DIRECTSMS_SENDER = os.getenv('DIRECTSMS_SENDER', 'BoConcept')
+
+def _first_env(*names: str, default: str = '') -> str:
+    for name in names:
+        value = os.getenv(name, '').strip()
+        if value:
+            return value
+    return default
+
+
+SINCH_MESSAGEMEDIA_BASE_URL = _first_env(
+    'SINCH_MESSAGEMEDIA_BASE_URL',
+    'MESSAGEMEDIA_BASE_URL',
+    default='https://api.messagemedia.com'
+)
+SINCH_MESSAGEMEDIA_API_KEY = _first_env(
+    'SINCH_MESSAGEMEDIA_API_KEY',
+    'MESSAGEMEDIA_API_KEY',
+    'DIRECTSMS_API_KEY'
+)
+SINCH_MESSAGEMEDIA_API_SECRET = _first_env(
+    'SINCH_MESSAGEMEDIA_API_SECRET',
+    'MESSAGEMEDIA_API_SECRET',
+    'DIRECTSMS_API_SECRET'
+)
+SINCH_MESSAGEMEDIA_SENDER_ID = _first_env(
+    'SINCH_MESSAGEMEDIA_SENDER_ID',
+    'MESSAGEMEDIA_SENDER_ID',
+    'SINCH_MESSAGEMEDIA_SOURCE_NUMBER',
+    'MESSAGEMEDIA_SOURCE_NUMBER',
+    'DIRECTSMS_SENDER',
+    default='BoConcept'
+)
 BRAND_LOGO_PATH = Path(os.getenv('BRAND_LOGO_PATH', BASE_DIR / 'assets' / 'logo.png')).resolve()
 
 for path in [DATA_DIR, SHAREPOINT_INBOX, DB_PATH.parent]:

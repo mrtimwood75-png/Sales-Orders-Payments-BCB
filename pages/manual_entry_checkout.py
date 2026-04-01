@@ -88,6 +88,14 @@ def get_secret(name, default=""):
         return default
 
 
+def get_first_secret(*names, default=""):
+    for name in names:
+        value = str(get_secret(name, "")).strip()
+        if value:
+            return value
+    return default
+
+
 def reset_diag():
     st.session_state.manual_notification_diag = []
 
@@ -98,91 +106,86 @@ def add_diag(label, value):
     st.session_state.manual_notification_diag.append((label, value))
 
 
-def directsms_connect(debug=False):
-    username = get_secret("DIRECTSMS_USERNAME")
-    password = get_secret("DIRECTSMS_PASSWORD")
+def sinch_sender_payload(sender_id):
+    sender = str(sender_id or "").strip()
+    if not sender:
+        return {}
+    if sender.startswith("+") or sender.isdigit():
+        return {
+            "source_number": sender,
+            "source_number_type": "INTERNATIONAL",
+        }
+    cleaned = "".join(ch for ch in sender if ch.isalnum())
+    if cleaned:
+        return {
+            "source_number": cleaned[:11],
+            "source_number_type": "ALPHANUMERIC",
+        }
+    return {}
 
-    if not username or not password:
-        raise ValueError("Missing DIRECTSMS_USERNAME or DIRECTSMS_PASSWORD in Streamlit secrets.")
 
-    url = "https://api.directsms.com.au/s3/http/connect"
+def directsms_get_balance(debug=False):
+    raise NotImplementedError("Balance lookup is not enabled for the Sinch MessageMedia migration build.")
+
+
+def directsms_send_message(to_mobile, message, debug=False):
+    api_key = get_first_secret("SINCH_MESSAGEMEDIA_API_KEY", "MESSAGEMEDIA_API_KEY", "DIRECTSMS_API_KEY")
+    api_secret = get_first_secret("SINCH_MESSAGEMEDIA_API_SECRET", "MESSAGEMEDIA_API_SECRET", "DIRECTSMS_API_SECRET")
+    sender_id = get_first_secret(
+        "SINCH_MESSAGEMEDIA_SENDER_ID",
+        "MESSAGEMEDIA_SENDER_ID",
+        "SINCH_MESSAGEMEDIA_SOURCE_NUMBER",
+        "MESSAGEMEDIA_SOURCE_NUMBER",
+        "DIRECTSMS_SENDERID",
+        "DIRECTSMS_SENDER",
+        default="BoConcept",
+    )
+    base_url = get_first_secret("SINCH_MESSAGEMEDIA_BASE_URL", "MESSAGEMEDIA_BASE_URL", default="https://api.messagemedia.com")
+
+    if not api_key or not api_secret:
+        raise ValueError("Missing Sinch MessageMedia API credentials in Streamlit secrets.")
+
+    payload = {
+        "messages": [
+            {
+                "content": str(message),
+                "destination_number": normalize_mobile_au(to_mobile),
+                "format": "SMS",
+                **sinch_sender_payload(sender_id),
+            }
+        ]
+    }
+
+    url = f"{base_url.rstrip('/')}/v1/messages"
     resp = requests.post(
         url,
-        data={"username": username, "password": password},
+        auth=(api_key, api_secret),
+        headers={
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "User-Agent": "BoConcept-Manual-Checkout/1.0",
+        },
+        json=payload,
         timeout=30,
     )
 
     if debug:
-        add_diag("Connect URL", url)
-        add_diag("Connect HTTP status", resp.status_code)
-        add_diag("Connect response body", resp.text)
-
-    resp.raise_for_status()
-    text = resp.text.strip()
-
-    if text.lower().startswith("err:"):
-        raise ValueError(text)
-
-    if not text.lower().startswith("id:"):
-        raise ValueError(f"Unexpected directSMS response: {text}")
-
-    return text.split(":", 1)[1].strip()
-
-
-def directsms_get_balance(debug=False):
-    connectionid = directsms_connect(debug=debug)
-    url = "https://api.directsms.com.au/s3/http/get_balance"
-
-    resp = requests.post(url, data={"connectionid": connectionid}, timeout=30)
-
-    if debug:
-        add_diag("Balance URL", url)
-        add_diag("Balance HTTP status", resp.status_code)
-        add_diag("Balance response body", resp.text)
-
-    resp.raise_for_status()
-    text = resp.text.strip()
-
-    if text.lower().startswith("err:"):
-        raise ValueError(text)
-
-    return text
-
-
-def directsms_send_message(to_mobile, message, debug=False):
-    connectionid = directsms_connect(debug=debug)
-    senderid = get_secret("DIRECTSMS_SENDERID", "").strip()
-
-    if not senderid:
-        raise ValueError("Missing DIRECTSMS_SENDERID in Streamlit secrets.")
-
-    data = {
-        "connectionid": connectionid,
-        "message": message,
-        "to": normalize_mobile_au(to_mobile),
-        "senderid": senderid,
-        "type": "1-way",
-    }
-
-    url = "https://api.directsms.com.au/s3/http/send_message"
-    resp = requests.post(url, data=data, timeout=30)
-
-    if debug:
-        add_diag("directSMS URL", url)
+        add_diag("Sinch MessageMedia URL", url)
         add_diag("HTTP status", resp.status_code)
         add_diag("Response body", resp.text)
-        add_diag("Payload", data)
+        add_diag("Payload", payload)
 
     resp.raise_for_status()
-    text = resp.text.strip()
+    body = resp.json()
+    messages = body.get("messages") or []
+    if not messages or not isinstance(messages[0], dict):
+        raise ValueError(f"Unexpected Sinch MessageMedia response: {body}")
 
-    if text.lower().startswith("err:"):
-        raise ValueError(text)
+    message_id = str(messages[0].get("message_id") or messages[0].get("messageId") or "").strip()
+    if not message_id:
+        raise ValueError(f"Unexpected Sinch MessageMedia response: {body}")
 
-    if not text.lower().startswith("id:"):
-        raise ValueError(f"Unexpected directSMS response: {text}")
-
-    return text.split(":", 1)[1].strip()
+    return message_id
 
 
 def default_templates():
