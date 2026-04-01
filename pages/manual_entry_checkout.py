@@ -316,22 +316,22 @@ else:
     st.warning("Stripe secret missing.")
 
 with st.form("manual_entry_form"):
-    col_a, col_b, col_c = st.columns(3)
+    col_a, col_b, col_c = st.columns([22, 34, 34])
     customer_name = col_a.text_input("Customer", value=st.session_state["manual_customer_name"])
     customer_email = col_b.text_input("Email", value=st.session_state["manual_customer_email"])
     phone = col_c.text_input("Phone", value=st.session_state["manual_phone"])
 
-    col_d, col_e = st.columns(2)
+    col_d, col_e, _row2_spacer = st.columns([18, 18, 64])
     sales_order = col_d.text_input("Sales order", value=st.session_state["manual_sales_order"])
     order_date = col_e.text_input("Order date", value=st.session_state["manual_order_date"])
 
-    col_g, col_h, col_i, col_j = st.columns(4)
+    col_g, col_h, col_i, col_j = st.columns([16, 16, 24, 28])
     total_amount = col_g.text_input("Total", value=f"{float(st.session_state['manual_total_amount']):.2f}")
     prepayment = col_h.text_input("Prepayment", value=f"{float(st.session_state['manual_prepayment']):.2f}")
     col_i.text_input("Current balance", value=f"{float(st.session_state['manual_balance_due']):.2f}", disabled=True)
     col_j.text_input("Payment amount", value=f"{float(st.session_state['manual_payment_amount']):.2f}", disabled=True)
 
-    b1, b2 = st.columns(2)
+    b1, b2, _button_spacer = st.columns([18, 18, 64])
     save_clicked = b1.form_submit_button("Apply Changes")
     create_link_clicked = b2.form_submit_button("Create Stripe Link")
 
@@ -366,8 +366,7 @@ if create_link_clicked:
         if parsed_balance_due < 0:
             parsed_balance_due = 0.0
 
-        effective_choice = payment_choice if parsed_total_amount > 0 else "balance"
-        payment_calc = payment_choice_to_values(effective_choice, parsed_total_amount, parsed_balance_due)
+        payment_calc = payment_choice_to_values("balance", parsed_total_amount, parsed_balance_due)
 
         st.session_state["manual_customer_name"] = customer_name
         st.session_state["manual_customer_email"] = customer_email
