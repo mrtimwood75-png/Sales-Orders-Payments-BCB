@@ -605,11 +605,105 @@ def search_rects(page, labels):
     results = []
     for label in labels:
         try:
-            rects = page.search_for(label)
+            results.extend(page.search_for(label))
         except Exception:
-            rects = []
-        results.extend(rects)
-    return rects if False else results
+            pass
+    return results
+
+
+def line_is_horizontal(draw_item):
+    if draw_item.get("type") != "s":
+        return False
+    items = draw_item.get("items", [])
+    if len(items) != 1:
+        return False
+    item = items[0]
+    if not item or item[0] != "l":
+        return False
+    p1 = item[1]
+    p2 = item[2]
+    return abs(p1.y - p2.y) <= 1.0
+
+
+def get_horizontal_line_segments(page):
+    segments = []
+    try:
+        drawings = page.get_drawings()
+    except Exception:
+        drawings = []
+
+    for d in drawings:
+        if not line_is_horizontal(d):
+            continue
+        item = d["items"][0]
+        p1 = item[1]
+        p2 = item[2]
+        y = (p1.y + p2.y) / 2
+        x0 = min(p1.x, p2.x)
+        x1 = max(p1.x, p2.x)
+        length = x1 - x0
+        width = d.get("width", 1)
+        segments.append(
+            {
+                "y": y,
+                "x0": x0,
+                "x1": x1,
+                "length": length,
+                "width": width,
+            }
+        )
+    return segments
+
+
+def find_payment_summary_anchor(page):
+    page_h = page.rect.height
+    page_w = page.rect.width
+
+    total_rects = [r for r in search_rects(page, ["Total", "total"]) if r.y0 > page_h * 0.45]
+    gst_rects = [r for r in search_rects(page, ["GST", "gst"]) if r.y0 > page_h * 0.45]
+    balance_rects = [r for r in search_rects(page, ["Balance due", "balance due"]) if r.y0 > page_h * 0.45]
+    prepay_rects = [r for r in search_rects(page, ["Prepayment", "prepayment"]) if r.y0 > page_h * 0.45]
+
+    if not total_rects or not gst_rects or not balance_rects:
+        return None
+
+    total_rect = sorted(total_rects, key=lambda r: (r.y0, r.x0))[-1]
+
+    gst_band = [r for r in gst_rects if abs(r.y0 - total_rect.y0) <= 28]
+    if not gst_band:
+        gst_band = gst_rects
+    gst_rect = sorted(gst_band, key=lambda r: (abs(r.y0 - total_rect.y0), r.x0))[0]
+
+    lower_reference = sorted(balance_rects, key=lambda r: (abs(r.x0 - total_rect.x0), r.y0))[0]
+
+    lines = get_horizontal_line_segments(page)
+    candidate_lines = [
+        ln for ln in lines
+        if ln["length"] >= page_w * 0.45 and ln["x0"] <= gst_rect.x0 + 20 and ln["x1"] >= total_rect.x1 - 20
+    ]
+
+    if not candidate_lines:
+        return None
+
+    upper_lines = [ln for ln in candidate_lines if ln["y"] < total_rect.y0 + 5]
+    lower_lines = [ln for ln in candidate_lines if ln["y"] > lower_reference.y0 - 8]
+
+    if not upper_lines or not lower_lines:
+        return None
+
+    upper_line = sorted(upper_lines, key=lambda ln: abs(ln["y"] - total_rect.y0))[0]
+    lower_line = sorted(lower_lines, key=lambda ln: abs(ln["y"] - lower_reference.y0))[0]
+
+    if lower_line["y"] <= upper_line["y"] + 12:
+        return None
+
+    return {
+        "gst_rect": gst_rect,
+        "total_rect": total_rect,
+        "upper_line": upper_line,
+        "lower_line": lower_line,
+        "has_prepay": len(prepay_rects) > 0,
+    }
 
 
 def find_payment_summary_page(doc):
@@ -617,96 +711,78 @@ def find_payment_summary_page(doc):
 
     for page_index in range(doc.page_count):
         page = doc[page_index]
-        h = page.rect.height
-
-        total_rects = [r for r in search_rects(page, ["Total", "total"]) if r.y0 > h * 0.35]
-        gst_rects = [r for r in search_rects(page, ["GST", "gst"]) if r.y0 > h * 0.35]
-        balance_rects = [r for r in search_rects(page, ["Balance due", "balance due"]) if r.y0 > h * 0.40]
-        prepay_rects = [r for r in search_rects(page, ["Prepayment", "prepayment"]) if r.y0 > h * 0.40]
-
-        if not total_rects:
+        anchor = find_payment_summary_anchor(page)
+        if anchor is None:
             continue
 
         score = 0
-        score += 100 if gst_rects else 0
-        score += 200 if balance_rects else 0
-        score += 120 if prepay_rects else 0
-        score += int(max(r.y0 for r in total_rects))
+        score += anchor["upper_line"]["length"]
+        score += 500 if anchor["has_prepay"] else 0
+        score += anchor["total_rect"].y0
 
         if best is None or score > best["score"]:
             best = {
                 "page_index": page_index,
                 "score": score,
-                "total_rects": total_rects,
-                "gst_rects": gst_rects,
-                "balance_rects": balance_rects,
-                "prepay_rects": prepay_rects,
+                "anchor": anchor,
             }
 
     return best
-
-
-def choose_total_and_gst_rect(page_info):
-    total_rect = sorted(page_info["total_rects"], key=lambda r: (r.y0, r.x0))[-1]
-    gst_rect = None
-
-    if page_info["gst_rects"]:
-        same_band = [r for r in page_info["gst_rects"] if abs(r.y0 - total_rect.y0) <= 24]
-        if same_band:
-            gst_rect = sorted(same_band, key=lambda r: (abs(r.y0 - total_rect.y0), r.x0))[0]
-        else:
-            gst_rect = sorted(page_info["gst_rects"], key=lambda r: (abs(r.y0 - total_rect.y0), r.x0))[0]
-
-    return total_rect, gst_rect
 
 
 def add_payment_button_to_pdf(doc, payment_url):
     if fitz is None or not payment_url or doc.page_count == 0:
         return
 
-    page_info = find_payment_summary_page(doc)
-    if page_info is not None:
-        page = doc[page_info["page_index"]]
-        total_rect, gst_rect = choose_total_and_gst_rect(page_info)
+    summary = find_payment_summary_page(doc)
+    if summary is None:
+        return
 
-        left_limit = 18
-        if gst_rect is not None:
-            left_limit = max(left_limit, gst_rect.x1 + 14)
+    page = doc[summary["page_index"]]
+    anchor = summary["anchor"]
 
-        # Reserve enough room for long totals so the button never covers the amount.
-        reserved_total_amount_width = 108
-        gap_before_total_amount = 12
-        right_limit = total_rect.x0 - reserved_total_amount_width - gap_before_total_amount
+    gst_rect = anchor["gst_rect"]
+    total_rect = anchor["total_rect"]
+    upper_line = anchor["upper_line"]
+    lower_line = anchor["lower_line"]
 
-        available_width = right_limit - left_limit
-        if available_width >= 72:
-            button_width = min(92, available_width)
-            button_width = max(78, button_width)
+    top_y = upper_line["y"] + 3
+    bottom_y = lower_line["y"] - 3
+    band_height = bottom_y - top_y
+    if band_height < 12:
+        return
 
-            x1 = right_limit
-            x0 = x1 - button_width
+    button_height = min(20, band_height)
+    y0 = top_y + (band_height - button_height) / 2
+    y1 = y0 + button_height
 
-            if x0 < left_limit:
-                x0 = left_limit
-                x1 = x0 + button_width
+    left_limit = max(gst_rect.x1 + 16, upper_line["x0"] + 20)
 
-            final_width = x1 - x0
-            if final_width >= 72:
-                y0 = max(total_rect.y0 - 1.5, 18)
-                y1 = y0 + 20
-                button_rect = fitz.Rect(x0, y0, x1, y1)
-                draw_gradient_button(page, button_rect, "Click to Pay")
-                page.insert_link(
-                    {
-                        "kind": fitz.LINK_URI,
-                        "from": button_rect,
-                        "uri": payment_url,
-                    }
-                )
-                return
+    reserved_total_amount_width = 112
+    gap_before_total_amount = 12
+    right_limit = min(total_rect.x0 - reserved_total_amount_width - gap_before_total_amount, upper_line["x1"] - 20)
 
-    page = doc[0]
-    button_rect = fitz.Rect(page.rect.width - 136, 36, page.rect.width - 30, 56)
+    available_width = right_limit - left_limit
+    if available_width < 72:
+        return
+
+    button_width = min(92, available_width)
+    button_width = max(78, button_width)
+
+    x1 = right_limit
+    x0 = x1 - button_width
+    if x0 < left_limit:
+        x0 = left_limit
+        x1 = x0 + button_width
+
+    if x1 > right_limit:
+        x1 = right_limit
+        x0 = x1 - button_width
+
+    if (x1 - x0) < 72:
+        return
+
+    button_rect = fitz.Rect(x0, y0, x1, y1)
     draw_gradient_button(page, button_rect, "Click to Pay")
     page.insert_link(
         {
