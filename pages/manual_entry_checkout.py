@@ -7,8 +7,10 @@ from services.checkout_sms import (
     build_sms_message,
     create_stripe_checkout_link,
     default_sms_templates,
+    load_shared_sms_templates,
     messagemedia_send_message,
     normalize_mobile_au,
+    save_shared_sms_templates,
 )
 
 try:
@@ -89,6 +91,10 @@ def payment_choice_to_values(choice: str, total_amount: float, balance_due: floa
 
 
 def init_state():
+    shared_templates = load_shared_sms_templates(PROJECT_ROOT)
+    default_template_name = next(iter(shared_templates.keys()), "Standard payment request")
+    default_template_text = shared_templates.get(default_template_name, default_sms_templates()["Standard payment request"])
+
     defaults = {
         "manual_customer_name": "",
         "manual_customer_email": "",
@@ -104,10 +110,10 @@ def init_state():
         "manual_payment_link": "",
         "manual_stripe_session_id": "",
         "manual_notification_diag": [],
-        "manual_templates": default_sms_templates(),
-        "manual_template_name": "Standard payment request",
+        "manual_templates": shared_templates,
+        "manual_template_name": default_template_name,
         "manual_new_template_name": "",
-        "manual_template_text": default_sms_templates()["Standard payment request"],
+        "manual_template_text": default_template_text,
         "manual_sms_status": "",
         "manual_sms_confirm_open": False,
         "manual_sms_confirm_name": "",
@@ -116,6 +122,15 @@ def init_state():
     for key, value in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = value
+
+    current_templates = st.session_state.get("manual_templates", {})
+    if not isinstance(current_templates, dict) or not current_templates:
+        st.session_state["manual_templates"] = shared_templates
+
+    if st.session_state["manual_template_name"] not in st.session_state["manual_templates"]:
+        st.session_state["manual_template_name"] = next(iter(st.session_state["manual_templates"].keys()))
+
+    st.session_state["manual_template_text"] = st.session_state["manual_templates"][st.session_state["manual_template_name"]]
 
 
 st.set_page_config(page_title=APP_TITLE, layout="wide")
@@ -249,6 +264,7 @@ st.session_state["manual_template_text"] = st.text_area(
 )
 
 st.session_state["manual_templates"][st.session_state["manual_template_name"]] = st.session_state["manual_template_text"]
+save_shared_sms_templates(PROJECT_ROOT, st.session_state["manual_templates"])
 
 t1, t2, t3 = st.columns([2, 1, 1])
 
@@ -270,6 +286,7 @@ with t2:
                 "Hi {customer_name}, payment for order {order_number} is now due. "
                 "Amount payable: {payment_amount}. Please pay securely here: {stripe_checkout_url}"
             )
+            save_shared_sms_templates(PROJECT_ROOT, st.session_state["manual_templates"])
             st.session_state["manual_template_name"] = new_name
             st.session_state["manual_template_text"] = st.session_state["manual_templates"][new_name]
             st.session_state["manual_new_template_name"] = ""
@@ -282,6 +299,7 @@ with t3:
             st.error("At least one template must remain.")
         else:
             del st.session_state["manual_templates"][current]
+            save_shared_sms_templates(PROJECT_ROOT, st.session_state["manual_templates"])
             remaining = list(st.session_state["manual_templates"].keys())
             st.session_state["manual_template_name"] = remaining[0]
             st.session_state["manual_template_text"] = st.session_state["manual_templates"][remaining[0]]

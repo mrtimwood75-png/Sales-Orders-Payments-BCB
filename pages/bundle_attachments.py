@@ -1,4 +1,3 @@
-import json
 import os
 import re
 from pathlib import Path
@@ -9,8 +8,10 @@ from services.checkout_sms import (
     build_sms_message,
     create_stripe_checkout_link,
     default_sms_templates,
+    load_shared_sms_templates,
     messagemedia_send_message,
     normalize_mobile_au,
+    save_shared_sms_templates,
 )
 
 try:
@@ -28,7 +29,6 @@ APP_TITLE = "Add Logo & Bundle Attachments"
 BASE_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = BASE_DIR.parent
 DEFAULT_FILES_DIR = PROJECT_ROOT / "assets" / "default-files"
-TEMPLATE_FILE = PROJECT_ROOT / "bundle-sms-templates.json"
 
 STRIPE_SECRET_KEY = st.secrets.get("STRIPE_SECRET_KEY", os.getenv("STRIPE_SECRET_KEY", "")).strip()
 STRIPE_SUCCESS_URL = st.secrets.get("STRIPE_SUCCESS_URL", os.getenv("STRIPE_SUCCESS_URL", "")).strip()
@@ -125,31 +125,6 @@ def initialise_default_attachments():
     st.session_state["bundle_only_attachments"] = get_default_attachments()
 
 
-def default_templates():
-    return {name: {"text": text} for name, text in default_sms_templates().items()}
-
-
-def load_templates_from_file():
-    if TEMPLATE_FILE.exists():
-        try:
-            with open(TEMPLATE_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            if isinstance(data, dict) and data:
-                return data
-        except Exception:
-            pass
-    data = default_templates()
-    save_templates_to_file(data)
-    return data
-
-
-def save_templates_to_file(data=None):
-    TEMPLATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    payload = data if data is not None else st.session_state.get("bundle_only_templates", default_templates())
-    with open(TEMPLATE_FILE, "w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2, ensure_ascii=False)
-
-
 def reset_session():
     keys = [
         "bundle_only_order_pdf_name",
@@ -211,14 +186,14 @@ def init_state():
             st.session_state[k] = v
 
     if "bundle_only_templates" not in st.session_state:
-        st.session_state["bundle_only_templates"] = load_templates_from_file()
+        st.session_state["bundle_only_templates"] = load_shared_sms_templates(PROJECT_ROOT)
 
     if "bundle_only_template_name" not in st.session_state:
         st.session_state["bundle_only_template_name"] = list(st.session_state["bundle_only_templates"].keys())[0]
 
     if "bundle_only_template_text" not in st.session_state:
         selected = st.session_state["bundle_only_templates"][st.session_state["bundle_only_template_name"]]
-        st.session_state["bundle_only_template_text"] = selected.get("text", "")
+        st.session_state["bundle_only_template_text"] = selected
 
 
 def get_page_text_left_margin(page):
@@ -1048,7 +1023,7 @@ if st.session_state.get("bundle_only_order_pdf_bytes"):
 
     if current_template != st.session_state["bundle_only_template_name"]:
         st.session_state["bundle_only_template_name"] = current_template
-        st.session_state["bundle_only_template_text"] = st.session_state["bundle_only_templates"][current_template]["text"]
+        st.session_state["bundle_only_template_text"] = st.session_state["bundle_only_templates"][current_template]
         st.rerun()
 
     st.text_area(
@@ -1087,10 +1062,8 @@ if st.session_state.get("bundle_only_order_pdf_bytes"):
             if not name:
                 st.error("Select a template first.")
             else:
-                st.session_state["bundle_only_templates"][name] = {
-                    "text": st.session_state.get("bundle_only_template_text", "").strip()
-                }
-                save_templates_to_file()
+                st.session_state["bundle_only_templates"][name] = st.session_state.get("bundle_only_template_text", "").strip()
+                save_shared_sms_templates(PROJECT_ROOT, st.session_state["bundle_only_templates"])
                 st.success(f'Template "{name}" saved.')
 
     with a3:
@@ -1101,11 +1074,11 @@ if st.session_state.get("bundle_only_order_pdf_bytes"):
             elif new_name in st.session_state["bundle_only_templates"]:
                 st.error("A template with that name already exists.")
             else:
-                st.session_state["bundle_only_templates"][new_name] = {
-                    "text": st.session_state.get("bundle_only_template_text", "").strip()
-                    or "Hi {customer_name}, payment for order {order_number} is now due. Amount payable: {payment_amount}. Please pay securely here: {stripe_checkout_url}"
-                }
-                save_templates_to_file()
+                st.session_state["bundle_only_templates"][new_name] = (
+                    st.session_state.get("bundle_only_template_text", "").strip()
+                    or default_sms_templates()["Standard payment request"]
+                )
+                save_shared_sms_templates(PROJECT_ROOT, st.session_state["bundle_only_templates"])
                 st.session_state["bundle_only_template_name"] = new_name
                 st.session_state["bundle_only_new_template_name"] = ""
                 st.success(f'Template "{new_name}" created.')
@@ -1118,10 +1091,10 @@ if st.session_state.get("bundle_only_order_pdf_bytes"):
                 st.error("At least one template must remain.")
             else:
                 del st.session_state["bundle_only_templates"][current]
-                save_templates_to_file()
+                save_shared_sms_templates(PROJECT_ROOT, st.session_state["bundle_only_templates"])
                 remaining = list(st.session_state["bundle_only_templates"].keys())
                 st.session_state["bundle_only_template_name"] = remaining[0]
-                st.session_state["bundle_only_template_text"] = st.session_state["bundle_only_templates"][remaining[0]]["text"]
+                st.session_state["bundle_only_template_text"] = st.session_state["bundle_only_templates"][remaining[0]]
                 st.rerun()
 
     if st.button("Populate SMS message from current template", use_container_width=True):

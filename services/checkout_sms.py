@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import json
+from pathlib import Path
 from typing import Callable
 
 import requests
@@ -40,6 +42,57 @@ def default_sms_templates() -> dict[str, str]:
             "Hi {customer_name}, please pay {payment_amount} for order {order_number}: {stripe_checkout_url}"
         ),
     }
+
+
+def _coerce_templates(raw_data) -> dict[str, str]:
+    if not isinstance(raw_data, dict):
+        return {}
+
+    templates: dict[str, str] = {}
+    for name, value in raw_data.items():
+        key = str(name).strip()
+        if not key:
+            continue
+
+        if isinstance(value, str):
+            text = value.strip()
+        elif isinstance(value, dict):
+            text = str(value.get("text", "")).strip()
+        else:
+            text = str(value).strip()
+
+        if text:
+            templates[key] = text
+
+    return templates
+
+
+def load_shared_sms_templates(project_root: Path | str, filename: str = "bundle-sms-templates.json") -> dict[str, str]:
+    path = Path(project_root) / filename
+    if path.exists():
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                templates = _coerce_templates(json.load(f))
+            if templates:
+                return templates
+        except Exception:
+            pass
+
+    templates = default_sms_templates()
+    save_shared_sms_templates(project_root, templates, filename=filename)
+    return templates
+
+
+def save_shared_sms_templates(
+    project_root: Path | str,
+    templates: dict[str, str],
+    filename: str = "bundle-sms-templates.json",
+) -> None:
+    path = Path(project_root) / filename
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = _coerce_templates(templates)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, ensure_ascii=False)
 
 
 def build_sms_message(payload: dict, template_text: str, format_money_fn: Callable[[float], str]) -> str:
