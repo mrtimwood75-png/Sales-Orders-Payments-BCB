@@ -1,11 +1,18 @@
-import json
 import os
 import re
 from pathlib import Path
 
-import requests
-from requests.auth import HTTPBasicAuth
 import streamlit as st
+
+from services.checkout_sms import (
+    build_sms_message,
+    create_stripe_checkout_link,
+    default_sms_templates,
+    load_shared_sms_templates,
+    messagemedia_send_message,
+    normalize_mobile_au,
+    save_shared_sms_templates,
+)
 
 try:
     import fitz  # PyMuPDF
@@ -22,7 +29,6 @@ APP_TITLE = "Add Logo & Bundle Attachments"
 BASE_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = BASE_DIR.parent
 DEFAULT_FILES_DIR = PROJECT_ROOT / "assets" / "default-files"
-TEMPLATE_FILE = PROJECT_ROOT / "bundle-sms-templates.json"
 
 STRIPE_SECRET_KEY = st.secrets.get("STRIPE_SECRET_KEY", os.getenv("STRIPE_SECRET_KEY", "")).strip()
 STRIPE_SUCCESS_URL = st.secrets.get("STRIPE_SUCCESS_URL", os.getenv("STRIPE_SUCCESS_URL", "")).strip()
@@ -96,27 +102,6 @@ def format_money(value):
         return str(value or "")
 
 
-def normalize_mobile_au(mobile):
-    mobile = str(mobile).strip()
-    allowed = []
-    for ch in mobile:
-        if ch.isdigit() or ch == "+":
-            allowed.append(ch)
-    mobile = "".join(allowed)
-
-    if not mobile:
-        return ""
-
-    if mobile.startswith("+61"):
-        return mobile
-    if mobile.startswith("61"):
-        return "+" + mobile
-    if mobile.startswith("04") and len(mobile) >= 10:
-        return "+61" + mobile[1:]
-
-    return mobile
-
-
 def get_default_attachments():
     attachments = []
     if not DEFAULT_FILES_DIR.exists() or not DEFAULT_FILES_DIR.is_dir():
@@ -138,47 +123,6 @@ def get_default_attachments():
 
 def initialise_default_attachments():
     st.session_state["bundle_only_attachments"] = get_default_attachments()
-
-
-def default_templates():
-    return {
-        "Standard payment request": {
-            "text": (
-                "Hi {customer_name}, payment for order {order_number} is now due. "
-                "Amount payable: {payment_amount}. Please pay securely here: {stripe_checkout_url}"
-            )
-        },
-        "Friendly reminder": {
-            "text": (
-                "Hi {customer_name}, just a reminder that payment for order {order_number} "
-                "of {payment_amount} is outstanding. Payment link: {stripe_checkout_url}"
-            )
-        },
-        "Short version": {
-            "text": "Hi {customer_name}, please pay {payment_amount} for order {order_number}: {stripe_checkout_url}"
-        },
-    }
-
-
-def load_templates_from_file():
-    if TEMPLATE_FILE.exists():
-        try:
-            with open(TEMPLATE_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            if isinstance(data, dict) and data:
-                return data
-        except Exception:
-            pass
-    data = default_templates()
-    save_templates_to_file(data)
-    return data
-
-
-def save_templates_to_file(data=None):
-    TEMPLATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    payload = data if data is not None else st.session_state.get("bundle_only_templates", default_templates())
-    with open(TEMPLATE_FILE, "w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2, ensure_ascii=False)
 
 
 def reset_session():
@@ -242,14 +186,14 @@ def init_state():
             st.session_state[k] = v
 
     if "bundle_only_templates" not in st.session_state:
-        st.session_state["bundle_only_templates"] = load_templates_from_file()
+        st.session_state["bundle_only_templates"] = load_shared_sms_templates(PROJECT_ROOT)
 
     if "bundle_only_template_name" not in st.session_state:
         st.session_state["bundle_only_template_name"] = list(st.session_state["bundle_only_templates"].keys())[0]
 
     if "bundle_only_template_text" not in st.session_state:
         selected = st.session_state["bundle_only_templates"][st.session_state["bundle_only_template_name"]]
-        st.session_state["bundle_only_template_text"] = selected.get("text", "")
+        st.session_state["bundle_only_template_text"] = selected
 
 
 def get_page_text_left_margin(page):
@@ -424,6 +368,7 @@ def seed_fields_from_pdf(fields):
             "mobile": normalize_mobile_au(st.session_state["bundle_only_phone"]),
         },
         st.session_state["bundle_only_template_text"],
+        format_money,
     )
 
 
@@ -873,150 +818,6 @@ def build_single_bundle_pdf_bytes(main_pdf_bytes, attachments, logo_path, doc_ty
     return output
 
 
-def ensure_stripe_ready():
-    if stripe is None:
-        raise RuntimeError("Stripe package not installed")
-    if not STRIPE_SECRET_KEY:
-        raise RuntimeError("Missing STRIPE_SECRET_KEY in Streamlit secrets")
-    if not STRIPE_SUCCESS_URL:
-        raise RuntimeError("Missing STRIPE_SUCCESS_URL in Streamlit secrets")
-    if not STRIPE_CANCEL_URL:
-        raise RuntimeError("Missing STRIPE_CANCEL_URL in Streamlit secrets")
-    stripe.api_key = STRIPE_SECRET_KEY
-
-
-def create_stripe_checkout_link(customer_name, customer_email, sales_order, amount, payment_label, phone):
-    amount_value = float(amount or 0)
-    if amount_value <= 0:
-        raise RuntimeError("Payment amount must be greater than 0")
-
-    ensure_stripe_ready()
-
-    unit_amount = int(round(amount_value * 100))
-    order_ref = sales_order or "Order"
-
-    session = stripe.checkout.Session.create(
-        mode="payment",
-        success_url=STRIPE_SUCCESS_URL,
-        cancel_url=STRIPE_CANCEL_URL,
-        customer_email=customer_email or None,
-        client_reference_id=order_ref,
-        payment_method_types=["card"],
-        line_items=[
-            {
-                "quantity": 1,
-                "price_data": {
-                    "currency": STRIPE_CURRENCY,
-                    "unit_amount": unit_amount,
-                    "product_data": {
-                        "name": payment_label,
-                        "description": f"BoConcept order {order_ref}",
-                    },
-                },
-            }
-        ],
-        metadata={
-            "sales_order": order_ref,
-            "customer_name": customer_name or "",
-            "customer_email": customer_email or "",
-            "payment_label": payment_label,
-            "payment_amount": f"{amount_value:.2f}",
-            "mobile": normalize_mobile_au(phone),
-        },
-    )
-
-    return {"url": session.url, "session_id": session.id}
-
-
-def get_messagemedia_config():
-    api_key = str(
-        get_secret("SINCH_MESSAGEMEDIA_API_KEY", "")
-        or get_secret("MESSAGEMEDIA_API_KEY", "")
-        or get_secret("DIRECTSMS_API_KEY", "")
-        or os.getenv("SINCH_MESSAGEMEDIA_API_KEY", "")
-        or os.getenv("MESSAGEMEDIA_API_KEY", "")
-        or os.getenv("DIRECTSMS_API_KEY", "")
-    ).strip()
-    api_secret = str(
-        get_secret("SINCH_MESSAGEMEDIA_API_SECRET", "")
-        or get_secret("MESSAGEMEDIA_API_SECRET", "")
-        or get_secret("DIRECTSMS_API_SECRET", "")
-        or os.getenv("SINCH_MESSAGEMEDIA_API_SECRET", "")
-        or os.getenv("MESSAGEMEDIA_API_SECRET", "")
-        or os.getenv("DIRECTSMS_API_SECRET", "")
-    ).strip()
-    sender = str(
-        get_secret("SINCH_MESSAGEMEDIA_SENDER_ID", "")
-        or get_secret("MESSAGEMEDIA_SENDER", "")
-        or get_secret("DIRECTSMS_SENDER", "")
-        or get_secret("DIRECTSMS_SENDERID", "")
-        or os.getenv("SINCH_MESSAGEMEDIA_SENDER_ID", "")
-        or os.getenv("MESSAGEMEDIA_SENDER", "")
-        or os.getenv("DIRECTSMS_SENDER", "")
-        or os.getenv("DIRECTSMS_SENDERID", "")
-    ).strip()
-    base_url = str(
-        get_secret("SINCH_MESSAGEMEDIA_BASE_URL", "")
-        or get_secret("MESSAGEMEDIA_BASE_URL", "")
-        or os.getenv("SINCH_MESSAGEMEDIA_BASE_URL", "")
-        or os.getenv("MESSAGEMEDIA_BASE_URL", "https://api.messagemedia.com/v1")
-    ).strip()
-
-    if not api_key or not api_secret:
-        raise ValueError("Missing Sinch MessageMedia API key or secret in Streamlit secrets.")
-
-    base_url = base_url.strip().rstrip("/")
-    if base_url.endswith("/v1"):
-        url = f"{base_url}/messages"
-    elif base_url.endswith("/messages"):
-        url = base_url
-    else:
-        url = f"{base_url}/v1/messages"
-
-    return api_key, api_secret, sender, url
-
-
-def messagemedia_send_message(to_mobile, message):
-    api_key, api_secret, sender, url = get_messagemedia_config()
-
-    sms = {
-        "content": message,
-        "destination_number": normalize_mobile_au(to_mobile),
-        "format": "SMS",
-        "delivery_report": True,
-    }
-
-    if sender:
-        sms["source_number"] = sender
-        sms["source_number_type"] = "ALPHANUMERIC" if not sender.lstrip("+").isdigit() else "INTERNATIONAL"
-
-    payload = {"messages": [sms]}
-    resp = requests.post(
-        url,
-        json=payload,
-        auth=HTTPBasicAuth(api_key, api_secret),
-        headers={"Content-Type": "application/json", "Accept": "application/json"},
-        timeout=30,
-    )
-
-    resp.raise_for_status()
-    body = resp.json()
-    messages = body.get("messages") or []
-    if not messages:
-        return resp.text.strip()
-    return str(messages[0].get("message_id") or resp.text.strip())
-
-
-def build_sms_message(payload, template_text):
-    return template_text.format(
-        customer_name=str(payload.get("customer_name", "")).strip(),
-        order_number=str(payload.get("order_number", "")).strip(),
-        payment_amount=format_money(payload.get("payment_amount", 0)),
-        stripe_checkout_url=str(payload.get("stripe_checkout_url", "")).strip(),
-        mobile=str(payload.get("mobile", "")).strip(),
-    )
-
-
 def render_download_button(button_label, bundle_bytes, bundle_name, file_count, doc_type):
     st.download_button(
         button_label,
@@ -1137,6 +938,11 @@ if st.session_state.get("bundle_only_order_pdf_bytes"):
                     raise RuntimeError("Payment Request must be greater than 0")
 
                 link_result = create_stripe_checkout_link(
+                    stripe_module=stripe,
+                    stripe_secret_key=STRIPE_SECRET_KEY,
+                    stripe_success_url=STRIPE_SUCCESS_URL,
+                    stripe_cancel_url=STRIPE_CANCEL_URL,
+                    stripe_currency=STRIPE_CURRENCY,
                     customer_name=st.session_state.get("bundle_only_customer_name", ""),
                     customer_email=st.session_state.get("bundle_only_email", ""),
                     sales_order=st.session_state.get("bundle_only_order_number", ""),
@@ -1217,7 +1023,7 @@ if st.session_state.get("bundle_only_order_pdf_bytes"):
 
     if current_template != st.session_state["bundle_only_template_name"]:
         st.session_state["bundle_only_template_name"] = current_template
-        st.session_state["bundle_only_template_text"] = st.session_state["bundle_only_templates"][current_template]["text"]
+        st.session_state["bundle_only_template_text"] = st.session_state["bundle_only_templates"][current_template]
         st.rerun()
 
     st.text_area(
@@ -1246,6 +1052,7 @@ if st.session_state.get("bundle_only_order_pdf_bytes"):
                     "mobile": normalize_mobile_au(st.session_state.get("bundle_only_phone", "")),
                 },
                 st.session_state["bundle_only_template_text"],
+                format_money,
             )
             st.rerun()
 
@@ -1255,10 +1062,8 @@ if st.session_state.get("bundle_only_order_pdf_bytes"):
             if not name:
                 st.error("Select a template first.")
             else:
-                st.session_state["bundle_only_templates"][name] = {
-                    "text": st.session_state.get("bundle_only_template_text", "").strip()
-                }
-                save_templates_to_file()
+                st.session_state["bundle_only_templates"][name] = st.session_state.get("bundle_only_template_text", "").strip()
+                save_shared_sms_templates(PROJECT_ROOT, st.session_state["bundle_only_templates"])
                 st.success(f'Template "{name}" saved.')
 
     with a3:
@@ -1269,11 +1074,11 @@ if st.session_state.get("bundle_only_order_pdf_bytes"):
             elif new_name in st.session_state["bundle_only_templates"]:
                 st.error("A template with that name already exists.")
             else:
-                st.session_state["bundle_only_templates"][new_name] = {
-                    "text": st.session_state.get("bundle_only_template_text", "").strip()
-                    or "Hi {customer_name}, payment for order {order_number} is now due. Amount payable: {payment_amount}. Please pay securely here: {stripe_checkout_url}"
-                }
-                save_templates_to_file()
+                st.session_state["bundle_only_templates"][new_name] = (
+                    st.session_state.get("bundle_only_template_text", "").strip()
+                    or default_sms_templates()["Standard payment request"]
+                )
+                save_shared_sms_templates(PROJECT_ROOT, st.session_state["bundle_only_templates"])
                 st.session_state["bundle_only_template_name"] = new_name
                 st.session_state["bundle_only_new_template_name"] = ""
                 st.success(f'Template "{new_name}" created.')
@@ -1286,10 +1091,10 @@ if st.session_state.get("bundle_only_order_pdf_bytes"):
                 st.error("At least one template must remain.")
             else:
                 del st.session_state["bundle_only_templates"][current]
-                save_templates_to_file()
+                save_shared_sms_templates(PROJECT_ROOT, st.session_state["bundle_only_templates"])
                 remaining = list(st.session_state["bundle_only_templates"].keys())
                 st.session_state["bundle_only_template_name"] = remaining[0]
-                st.session_state["bundle_only_template_text"] = st.session_state["bundle_only_templates"][remaining[0]]["text"]
+                st.session_state["bundle_only_template_text"] = st.session_state["bundle_only_templates"][remaining[0]]
                 st.rerun()
 
     if st.button("Populate SMS message from current template", use_container_width=True):
@@ -1302,6 +1107,7 @@ if st.session_state.get("bundle_only_order_pdf_bytes"):
                 "mobile": normalize_mobile_au(st.session_state.get("bundle_only_phone", "")),
             },
             st.session_state.get("bundle_only_template_text", ""),
+            format_money,
         )
         st.rerun()
 
@@ -1358,7 +1164,11 @@ if st.session_state.get("bundle_only_order_pdf_bytes"):
                     if not message:
                         raise RuntimeError("SMS message is blank.")
 
-                    message_id = messagemedia_send_message(phone_value, message)
+                    message_id = messagemedia_send_message(
+                        to_mobile=phone_value,
+                        message=message,
+                        secrets=st.secrets,
+                    )
                     st.session_state["bundle_only_sms_status"] = f"Sent ({message_id})"
                     st.session_state["bundle_only_sms_confirm_open"] = False
                     st.success(f"SMS sent: {message_id}")
