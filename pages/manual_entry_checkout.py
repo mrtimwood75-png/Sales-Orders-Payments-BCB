@@ -1,9 +1,15 @@
 import os
 from pathlib import Path
 
-import requests
-from requests.auth import HTTPBasicAuth
 import streamlit as st
+
+from services.checkout_sms import (
+    build_sms_message,
+    create_stripe_checkout_link,
+    default_sms_templates,
+    messagemedia_send_message,
+    normalize_mobile_au,
+)
 
 try:
     import stripe
@@ -37,18 +43,6 @@ def resolve_logo_path():
 LOGO_PATH = resolve_logo_path()
 
 
-def ensure_stripe_ready():
-    if stripe is None:
-        raise RuntimeError("Stripe package not installed")
-    if not STRIPE_SECRET_KEY:
-        raise RuntimeError("Missing STRIPE_SECRET_KEY in Streamlit secrets")
-    if not STRIPE_SUCCESS_URL:
-        raise RuntimeError("Missing STRIPE_SUCCESS_URL in Streamlit secrets")
-    if not STRIPE_CANCEL_URL:
-        raise RuntimeError("Missing STRIPE_CANCEL_URL in Streamlit secrets")
-    stripe.api_key = STRIPE_SECRET_KEY
-
-
 def parse_numeric_input(text, fallback=0.0):
     try:
         return float(str(text).replace(",", "").strip() or 0)
@@ -60,35 +54,6 @@ def format_money(value):
     return f"${float(value or 0):,.2f}"
 
 
-def normalize_mobile_au(mobile):
-    mobile = str(mobile).strip()
-
-    allowed = []
-    for ch in mobile:
-        if ch.isdigit() or ch == "+":
-            allowed.append(ch)
-    mobile = "".join(allowed)
-
-    if not mobile:
-        return ""
-
-    if mobile.startswith("+61"):
-        return mobile
-    if mobile.startswith("61"):
-        return "+" + mobile
-    if mobile.startswith("04") and len(mobile) >= 10:
-        return "+61" + mobile[1:]
-
-    return mobile
-
-
-def get_secret(name, default=""):
-    try:
-        return st.secrets[name]
-    except Exception:
-        return default
-
-
 def reset_diag():
     st.session_state.manual_notification_diag = []
 
@@ -97,115 +62,6 @@ def add_diag(label, value):
     if "manual_notification_diag" not in st.session_state:
         st.session_state.manual_notification_diag = []
     st.session_state.manual_notification_diag.append((label, value))
-
-
-def get_messagemedia_config():
-    api_key = str(
-        get_secret("SINCH_MESSAGEMEDIA_API_KEY", "")
-        or get_secret("MESSAGEMEDIA_API_KEY", "")
-        or get_secret("DIRECTSMS_API_KEY", "")
-        or os.getenv("SINCH_MESSAGEMEDIA_API_KEY", "")
-        or os.getenv("MESSAGEMEDIA_API_KEY", "")
-        or os.getenv("DIRECTSMS_API_KEY", "")
-    ).strip()
-    api_secret = str(
-        get_secret("SINCH_MESSAGEMEDIA_API_SECRET", "")
-        or get_secret("MESSAGEMEDIA_API_SECRET", "")
-        or get_secret("DIRECTSMS_API_SECRET", "")
-        or os.getenv("SINCH_MESSAGEMEDIA_API_SECRET", "")
-        or os.getenv("MESSAGEMEDIA_API_SECRET", "")
-        or os.getenv("DIRECTSMS_API_SECRET", "")
-    ).strip()
-    sender = str(
-        get_secret("SINCH_MESSAGEMEDIA_SENDER_ID", "")
-        or get_secret("MESSAGEMEDIA_SENDER", "")
-        or get_secret("DIRECTSMS_SENDER", "")
-        or get_secret("DIRECTSMS_SENDERID", "")
-        or os.getenv("SINCH_MESSAGEMEDIA_SENDER_ID", "")
-        or os.getenv("MESSAGEMEDIA_SENDER", "")
-        or os.getenv("DIRECTSMS_SENDER", "")
-        or os.getenv("DIRECTSMS_SENDERID", "")
-    ).strip()
-    base_url = str(
-        get_secret("SINCH_MESSAGEMEDIA_BASE_URL", "")
-        or get_secret("MESSAGEMEDIA_BASE_URL", "")
-        or os.getenv("SINCH_MESSAGEMEDIA_BASE_URL", "")
-        or os.getenv("MESSAGEMEDIA_BASE_URL", "https://api.messagemedia.com/v1")
-    ).strip()
-    if not api_key or not api_secret:
-        raise ValueError("Missing Sinch MessageMedia API key or secret in Streamlit secrets.")
-    base_url = base_url.strip().rstrip('/')
-    if base_url.endswith('/v1'):
-        url = f'{base_url}/messages'
-    elif base_url.endswith('/messages'):
-        url = base_url
-    else:
-        url = f'{base_url}/v1/messages'
-
-    return api_key, api_secret, sender, url
-
-
-def messagemedia_send_message(to_mobile, message, debug=False):
-    api_key, api_secret, sender, url = get_messagemedia_config()
-
-    sms = {
-        "content": message,
-        "destination_number": normalize_mobile_au(to_mobile),
-        "format": "SMS",
-        "delivery_report": True,
-    }
-
-    if sender:
-        sms["source_number"] = sender
-        sms["source_number_type"] = "ALPHANUMERIC" if not sender.lstrip("+").isdigit() else "INTERNATIONAL"
-
-    payload = {"messages": [sms]}
-    resp = requests.post(
-        url,
-        json=payload,
-        auth=HTTPBasicAuth(api_key, api_secret),
-        headers={"Content-Type": "application/json", "Accept": "application/json"},
-        timeout=30,
-    )
-
-    if debug:
-        add_diag("Sinch MessageMedia URL", url)
-        add_diag("HTTP status", resp.status_code)
-        add_diag("Response body", resp.text)
-        add_diag("Payload", payload)
-
-    resp.raise_for_status()
-    body = resp.json()
-    messages = body.get("messages") or []
-    if not messages:
-        return resp.text.strip()
-    return str(messages[0].get("message_id") or resp.text.strip())
-
-
-def default_templates():
-    return {
-        "Standard payment request": (
-            "Hi {customer_name}, payment for order {order_number} is now due. "
-            "Amount payable: {payment_amount}. Please pay securely here: {stripe_checkout_url}"
-        ),
-        "Friendly reminder": (
-            "Hi {customer_name}, just a reminder that payment for order {order_number} "
-            "of {payment_amount} is outstanding. Payment link: {stripe_checkout_url}"
-        ),
-        "Short version": (
-            "Hi {customer_name}, please pay {payment_amount} for order {order_number}: {stripe_checkout_url}"
-        ),
-    }
-
-
-def build_sms_message(payload, template_text):
-    return template_text.format(
-        customer_name=str(payload.get("customer_name", "")).strip(),
-        order_number=str(payload.get("order_number", "")).strip(),
-        payment_amount=format_money(payload.get("payment_amount", 0)),
-        stripe_checkout_url=str(payload.get("stripe_checkout_url", "")).strip(),
-        mobile=str(payload.get("mobile", "")).strip(),
-    )
 
 
 def payment_choice_to_values(choice: str, total_amount: float, balance_due: float):
@@ -232,49 +88,6 @@ def payment_choice_to_values(choice: str, total_amount: float, balance_due: floa
     }
 
 
-def create_stripe_checkout_link(customer_name, customer_email, sales_order, amount, payment_label, phone):
-    amount_value = float(amount or 0)
-    if amount_value <= 0:
-        raise RuntimeError("Payment amount must be greater than 0")
-
-    ensure_stripe_ready()
-
-    unit_amount = int(round(amount_value * 100))
-    order_ref = sales_order or "Order"
-
-    session = stripe.checkout.Session.create(
-        mode="payment",
-        success_url=STRIPE_SUCCESS_URL,
-        cancel_url=STRIPE_CANCEL_URL,
-        customer_email=customer_email or None,
-        client_reference_id=order_ref,
-        payment_method_types=["card"],
-        line_items=[
-            {
-                "quantity": 1,
-                "price_data": {
-                    "currency": STRIPE_CURRENCY,
-                    "unit_amount": unit_amount,
-                    "product_data": {
-                        "name": payment_label,
-                        "description": f"BoConcept order {order_ref}",
-                    },
-                },
-            }
-        ],
-        metadata={
-            "sales_order": order_ref,
-            "customer_name": customer_name or "",
-            "customer_email": customer_email or "",
-            "payment_label": payment_label,
-            "payment_amount": f"{amount_value:.2f}",
-            "mobile": normalize_mobile_au(phone),
-        },
-    )
-
-    return {"url": session.url, "session_id": session.id}
-
-
 def init_state():
     defaults = {
         "manual_customer_name": "",
@@ -291,10 +104,10 @@ def init_state():
         "manual_payment_link": "",
         "manual_stripe_session_id": "",
         "manual_notification_diag": [],
-        "manual_templates": default_templates(),
+        "manual_templates": default_sms_templates(),
         "manual_template_name": "Standard payment request",
         "manual_new_template_name": "",
-        "manual_template_text": default_templates()["Standard payment request"],
+        "manual_template_text": default_sms_templates()["Standard payment request"],
         "manual_sms_status": "",
         "manual_sms_confirm_open": False,
         "manual_sms_confirm_name": "",
@@ -378,6 +191,11 @@ if create_link_clicked:
         st.session_state["manual_payment_label"] = "Payment Request"
 
         link_result = create_stripe_checkout_link(
+            stripe_module=stripe,
+            stripe_secret_key=STRIPE_SECRET_KEY,
+            stripe_success_url=STRIPE_SUCCESS_URL,
+            stripe_cancel_url=STRIPE_CANCEL_URL,
+            stripe_currency=STRIPE_CURRENCY,
             customer_name=customer_name,
             customer_email=customer_email,
             sales_order=sales_order,
@@ -482,7 +300,7 @@ preview_payload = {
 if st.session_state["manual_payment_link"]:
     st.text_area(
         "SMS Preview",
-        value=build_sms_message(preview_payload, st.session_state["manual_template_text"]),
+        value=build_sms_message(preview_payload, st.session_state["manual_template_text"], format_money),
         height=110,
         disabled=True,
     )
@@ -528,8 +346,14 @@ if st.session_state["manual_sms_confirm_open"]:
                         "mobile": phone_value,
                     },
                     st.session_state["manual_template_text"],
+                    format_money,
                 )
-                message_id = messagemedia_send_message(phone_value, sms_message, debug=True)
+                message_id = messagemedia_send_message(
+                    to_mobile=phone_value,
+                    message=sms_message,
+                    secrets=st.secrets,
+                    debug_callback=add_diag,
+                )
                 st.session_state["manual_sms_status"] = f"Sent ({message_id})"
                 st.session_state["manual_sms_confirm_open"] = False
                 st.success(f"SMS sent: {message_id}")
