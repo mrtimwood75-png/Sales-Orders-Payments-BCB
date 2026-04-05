@@ -73,22 +73,9 @@ if LOGO_PATH:
 st.title(APP_TITLE)
 st.write("Choose an app below.")
 
-col1, col2, col3 = st.columns(3)
+col1, col2 = st.columns(2)
 
 with col1:
-    st.markdown(
-        """
-        <div class="app-card">
-            <div class="app-title">Add Stripe Payment Link</div>
-            <div class="app-text">Upload a sales order PDF, create a Stripe checkout link, apply a payment button to the PDF, send the link by SMS, and bundle attachments into one PDF.</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-    if st.button("Open Add Stripe Payment Link", use_container_width=True, key="open_sales_order_modifier"):
-        st.switch_page("pages/sales_order_modifier.py")
-
-with col2:
     st.markdown(
         """
         <div class="app-card">
@@ -101,7 +88,7 @@ with col2:
     if st.button("Open Add Logo & Bundle Attachments", use_container_width=True, key="open_bundle_attachments"):
         st.switch_page("pages/bundle_attachments.py")
 
-with col3:
+with col2:
     st.markdown(
         """
         <div class="app-card">
