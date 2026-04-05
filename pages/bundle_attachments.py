@@ -160,13 +160,29 @@ def default_templates():
     }
 
 
+def normalize_templates(data):
+    if not isinstance(data, dict) or not data:
+        return default_templates()
+
+    normalized = {}
+    for name, value in data.items():
+        template_name = str(name).strip() or "Template"
+        if isinstance(value, dict):
+            text = str(value.get("text", "")).strip()
+        else:
+            text = str(value or "").strip()
+        normalized[template_name] = {"text": text}
+
+    return normalized or default_templates()
+
+
 def load_templates_from_file():
     if TEMPLATE_FILE.exists():
         try:
             with open(TEMPLATE_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
             if isinstance(data, dict) and data:
-                return data
+                return normalize_templates(data)
         except Exception:
             pass
     data = default_templates()
@@ -176,7 +192,9 @@ def load_templates_from_file():
 
 def save_templates_to_file(data=None):
     TEMPLATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    payload = data if data is not None else st.session_state.get("bundle_only_templates", default_templates())
+    payload = normalize_templates(
+        data if data is not None else st.session_state.get("bundle_only_templates", default_templates())
+    )
     with open(TEMPLATE_FILE, "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2, ensure_ascii=False)
 
@@ -243,6 +261,8 @@ def init_state():
 
     if "bundle_only_templates" not in st.session_state:
         st.session_state["bundle_only_templates"] = load_templates_from_file()
+    else:
+        st.session_state["bundle_only_templates"] = normalize_templates(st.session_state["bundle_only_templates"])
 
     if "bundle_only_template_name" not in st.session_state:
         st.session_state["bundle_only_template_name"] = list(st.session_state["bundle_only_templates"].keys())[0]
